@@ -1,2 +1,7 @@
 pandas
+polars
 endplay
+streamlit
+streamlit-aggrid
+matplotlib
+seaborn
