@@ -23,7 +23,7 @@ import streamlitlib
 
 def create_df_from_pbn(boards):
     # Create dataframe from boards
-    df = pl.DataFrame([vars(b) for b in boards])
+    df = pl.DataFrame([vars(b) for b in boards],orient='row')
     for col in df.columns:
         #st.write(f"dtype:{df[col].dtype} Column:{col} Height:{df.height} Type:{df[col].dtype}")
         if df.height:
@@ -70,7 +70,7 @@ def calculate_dd_tricks_pars_scores(df, progress=None):
     par_scores_ns = [parlist.score for parlist in pars]
     par_scores_ew = [-score for score in par_scores_ns]
     par_contracts = [', '.join([str(contract.level) + 'SHDCN'[int(contract.denom)] + contract.declarer.abbr + contract.penalty.abbr + ('' if contract.result == 0 else '+'+str(contract.result) if contract.result > 0 else str(contract.result)) for contract in parlist]) for parlist in pars]
-    par_df = pl.DataFrame({'Par_Score_NS': par_scores_ns, 'Par_Score_EW': par_scores_ew, 'Par_Contract': par_contracts})
+    par_df = pl.DataFrame({'Par_Score_NS': par_scores_ns, 'Par_Score_EW': par_scores_ew, 'Par_Contract': par_contracts},orient='row')
 
     # Create dataframe of double dummy tricks per direction and suit
     dd_tricks_rows = [[sd[suit][direction] for direction in NSEW_direction_order for suit in SHDCN_suit_order] for sd in t_t]
@@ -154,11 +154,14 @@ def calculate_single_dummy_probabilities(deal, produce=100):
             rows.append([dd.to_pbn()]+nswe_flat_l)
 
         dd_df = pl.DataFrame(rows,schema=['Deal']+[d+s for d in 'NSEW' for s in 'CDHSN'],orient='row')
+        fill_values = {i:0 for i in range(14)} # fill values for missing tricks
         for d in 'NSEW':
             for s in 'SHDCN':
                 # todo: convert this line from pandas to polars
-                ns_ew_rows[(ns_ew,d,s)] = dd_df[d+s].to_pandas().value_counts(normalize=True).reindex(range(14), fill_value=0).tolist() # ['Fixed_Direction','Direction_Declarer','Suit']+['SD_Prob_Take_'+str(n) for n in range(14)]
-    
+                #ns_ew_rows[(ns_ew,d,s)] = dd_df[d+s].to_pandas().value_counts(normalize=True).reindex(range(14), fill_value=0).tolist() # ['Fixed_Direction','Direction_Declarer','Suit']+['SD_Prob_Take_'+str(n) for n in range(14)]
+                vc = {ds:p for ds,p in dd_df[d+s].value_counts(normalize=True).rows()}
+                index = {i:0.0 for i in range(14)} # fill values for missing probs
+                ns_ew_rows[(ns_ew,d,s)] = list((index|vc).values())
     return ns_ew_rows
 
 
@@ -176,7 +179,7 @@ def calculate_sd_probs(df, sd_productions=100, progress=None):
     for i,deal in enumerate(deals):
         if progress:
             percent_complete = int(i*100/len(deals))
-            progress.progress(percent_complete,f"{percent_complete}%: {i} of {len(deals)} single dummies calculated. deal:{deal}")
+            progress.progress(percent_complete,f"{percent_complete}%: {i} of {len(deals)} single dummies calculated using {st.session_state.single_dummy_sample_count} samples")
         # st.write(f"{percent_complete}%: {i} of {len(deals)} boards. deal:{deal}")
         if deal not in sd_cache_d:
             sd_cache_d[deal] = calculate_single_dummy_probabilities(deal, sd_productions) # all combinations of declarer pair direction, declarer direciton, suit, tricks taken
@@ -189,36 +192,36 @@ def calculate_sd_probs(df, sd_productions=100, progress=None):
     for deal in deals:
         v = sd_cache_d[deal]
         # st.write(pbn,v)
-        for (pair_direction,declarer_direction,suit),tricks in v.items():
-            for i,t in enumerate(tricks):
+        for (pair_direction,declarer_direction,suit),probs in v.items():
+            for i,t in enumerate(probs):
                 sd_probs_d['_'.join(['Probs',pair_direction,declarer_direction,suit,str(i)])].append(t)
     # st.write(sd_probs_d)
-    sd_probs_df = pl.DataFrame(sd_probs_d)
+    sd_probs_df = pl.DataFrame(sd_probs_d,orient='row')
     return sd_cache_d, sd_probs_df
 
 
 # calculate dict of contract result scores
-def calculate_sd_scores():
+def calculate_scores():
     SHDCN_suit_order = [3, 2, 1, 0, 4]
 
-    sd_scores_d = {}
+    scores_d = {}
     for suit in SHDCN_suit_order:
         for level in range(1,8): # contract level
             for tricks in range(14):
                 result = tricks-6-level
-                sd_scores_d[(level,'SHDCN'[suit],tricks,False)] = Contract(level=level,denom=suit,declarer=0,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(False)
-                sd_scores_d[(level,'SHDCN'[suit],tricks,True)] = Contract(level=level,denom=suit,declarer=0,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(True)
+                scores_d[(level,'SHDCN'[suit],tricks,False)] = Contract(level=level,denom=suit,declarer=0,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(False)
+                scores_d[(level,'SHDCN'[suit],tricks,True)] = Contract(level=level,denom=suit,declarer=0,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(True)
 
     # create score dataframe from dict
-    scores_d = defaultdict(list)
+    all_scores_d = defaultdict(list)
     for suit in 'SHDCN':
         for level in range(1,8):
             for i in range(14):
-                scores_d['_'.join(['Score',str(level)+suit])].append([sd_scores_d[(level,suit,i,False)],sd_scores_d[(level,suit,i,True)]])
-    # st.write(scores_d)
-    sd_scores_df = pl.DataFrame(scores_d)
-    #sd_scores_df.index.name = 'Taken'
-    return scores_d, sd_scores_df
+                all_scores_d['_'.join(['Score',str(level)+suit])].append([scores_d[(level,suit,i,False)],scores_d[(level,suit,i,True)]])
+    # st.write(all_scores_d)
+    scores_df = pl.DataFrame(all_scores_d,orient='row')
+    #scores_df.index.name = 'Taken'
+    return all_scores_d, scores_df
 
 
 def calculate_sd_expected_values(df,sd_cache_d,scores_d):
@@ -235,24 +238,26 @@ def calculate_sd_expected_values(df,sd_cache_d,scores_d):
                 exp_d['_'.join(['Exp',pair_direction,declarer_direction,suit,str(level)])].append(sum([prob*score[is_vul] for prob,score in zip(probs,scores_d['_'.join(['Score',str(level)+suit])])]))
             #st.write(exp_d)
     #st.write(exp_d)
-    sd_exp_df = pl.DataFrame(exp_d)
+    sd_exp_df = pl.DataFrame(exp_d,orient='row')
     return sd_exp_df
 
 
 # create columns containing the 1) the name of the column having the max expected value. 2) max expected value 3) contract having the max expected value.
-def create_best_contracts(r):
-    exp_tuples = tuple([(v,k) for k,v in r.items()])
-    ex_tuples_sorted = sorted(exp_tuples,reverse=True)
-    best_contract_tuple = ex_tuples_sorted[0]
-    best_contract_split = best_contract_tuple[1].split('_') # split column name into parts
-    best_contract = best_contract_split[4]+best_contract_split[3]+best_contract_split[2]
-    return [best_contract_tuple[1],best_contract_tuple[0],best_contract_tuple[0] if best_contract_tuple[1][-5] in ['N','S'] else -best_contract_tuple[0],best_contract]
+def create_best_contracts(df):
+    besties = []
+    for d in df.to_dicts():
+        exp_tuples = tuple([(v,k) for k,v in d.items()])
+        ex_tuples_sorted = sorted(exp_tuples,reverse=True)
+        best_contract_tuple = ex_tuples_sorted[0]
+        best_contract_split = best_contract_tuple[1].split('_') # split column name into parts
+        best_contract = best_contract_split[4]+best_contract_split[3]+best_contract_split[2]
+        besties.append([best_contract_tuple[1],best_contract_tuple[0],best_contract_tuple[0] if best_contract_tuple[1][-5] in ['N','S'] else -best_contract_tuple[0],best_contract])
+    return besties
 
 
 def calculate_best_contracts(sd_exp_df):
-    # todo: convert from pandas to polars.
-    sd_best_contract_l = sd_exp_df.to_pandas().apply(create_best_contracts,axis='columns')
-    sd_best_contract_df = pl.DataFrame(sd_best_contract_l.tolist(),schema=['Exp_Max_Col','Exp_Max','Exp_Max_NS','Best_Contract'],orient='row')
+    sd_best_contract_l = create_best_contracts(sd_exp_df) #sd_exp_df.to_pandas().apply(create_best_contracts,axis='columns')
+    sd_best_contract_df = pl.DataFrame(sd_best_contract_l,schema=['Exp_Max_Col','Exp_Max','Exp_Max_NS','Best_Contract'],orient='row')
     return sd_best_contract_df
 
 
@@ -281,7 +286,7 @@ def convert_contract_to_dd_tricks(df):
     return [None if c == 'PASS' else df['_'.join(['DD_Tricks',d,c[1]])][i] for i,(c,d) in enumerate(zip(df['Contract'],df['Declarer']))] # extract double dummy tricks using contract and declarer as the lookup keys
 
 
-def convert_score_to_score(df):
+def convert_score_to_score(r):
     score_split = r['Score'].split()
     assert len(score_split) == 2, f"score_split:{score_split}"
     assert score_split[0] in ['NS','EW'], f"score_split:{score_split[0]}"
@@ -372,7 +377,11 @@ def display_experiments(augmented_df):
     all, open, closed = sum(augmented_df['Exp_Max_Diff_NS'].gt(0)),sum(augmented_df['Room'].eq('Open')&augmented_df['Exp_Max_Diff_NS'].gt(0)),sum(augmented_df['Room'].eq('Closed')&augmented_df['Exp_Max_Diff_NS'].gt(0))
     st.write(f"Frequency where exceeding Exp_Max_Diff_NS: All:{all} Open:{open} Closed:{closed} Open-Closed:{open-closed}")
 
-    
+
+def ShowDataFrameTable(df, key):
+    return streamlitlib.ShowDataFrameTable(df.to_pandas(), key)
+
+
 def app_info():
     st.caption(f"Project lead is Robert Salita research@AiPolice.org. Code written in Python. UI written in Streamlit. Data engine is Pandas. Bridge lib is endplay. Self hosted using Cloudflare Tunnel. Repo:https://github.com/BSalita/Calculate_PBN_Results")
     st.caption(
@@ -388,23 +397,19 @@ def get_url_protocol(path):
     return options['protocol']
 
 
-def LoadPage(url):
+def LoadPage():
 
-    with st.container():
-        #url = st.session_state.text_input_url
-        st.write(f"URL:{url} protocol:{get_url_protocol(url)}")
+    with statistics_container:
+        url = st.session_state.text_input_url
+        st.info(f"Loading {url}") # using protocol:{get_url_protocol(url)}")
 
         if url is None or url == '' or (get_url_protocol(url) == 'file' and ('/' in url and '\\' in url and '&' in url)):
             return
 
-        # example valid urls
-        #url = 'https://raw.githubusercontent.com/BSalita/Calculate_PBN_Results/master/DDS_Camrose24_1-%20BENCAM22%20v%20WBridge5.pbn'
-        #url = 'file://c:/sw/bridge/ML-Contract-Bridge/src/Calculate_PBN_Results/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
-        #url = r'file://c:\sw/bridge\ML-Contract-Bridge\src\Calculate_PBN_Results/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
-        url = r'file://DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
-        of = fsspec.open(url, mode='r', encoding='utf-8')
-        with of as f:
-            pbn_data = f.read()
+        with st.spinner("Loading in progress ..."):
+            of = fsspec.open(url, mode='r', encoding='utf-8')
+            with of as f:
+                pbn_data = f.read()
 
         boards = pbn.loads(pbn_data)
 
@@ -412,7 +417,7 @@ def LoadPage(url):
         #st.write(vars(boards[0]))
 
         df = create_df_from_pbn(boards)
-        st.caption("Information Dataframe")
+        st.caption("PBN Dataframe")
         # Other dataframe components don't do implicit str conversion like pl.DataFrame. Must manually convert object columns to strings.
         str_df = df.clone()
         str_df = str_df.with_columns(
@@ -421,65 +426,74 @@ def LoadPage(url):
             pl.Series('play',map(lambda x: ', '.join(map(str,x[:3]))+' ...',str_df['play']),pl.String),
             pl.Series('_contract',map(str,str_df['_contract']),pl.String),
         )
-        streamlitlib.ShowDataFrameTable(str_df.to_pandas(), key='info_df')
+        ShowDataFrameTable(str_df, key='info_df')
 
         dd_tricks_progress = st.progress(0,"Calculating Double Dummy Tricks")
         dd_tricks_df, par_df, dd_score_df = calculate_dd_tricks_pars_scores(df, progress=dd_tricks_progress)
         st.caption("Double Dummy Tricks Dataframe")
-        streamlitlib.ShowDataFrameTable(dd_tricks_df.to_pandas(), key='dd_tricks_df')
+        ShowDataFrameTable(dd_tricks_df, key='dd_tricks_df')
         st.caption("Par Scores Dataframe")
-        streamlitlib.ShowDataFrameTable(par_df.to_pandas(), key='par_df')
+        ShowDataFrameTable(par_df, key='par_df')
         st.caption("Double Dummy Scores Dataframe")
-        streamlitlib.ShowDataFrameTable(dd_score_df.to_pandas(), key='dd_score_df')
+        ShowDataFrameTable(dd_score_df, key='dd_score_df')
 
-        sd_prob_progress = st.progress(0,"Calculating Single Dummy Probabilities")
-        sd_cache_d, sd_probs_df = calculate_sd_probs(df, sd_productions_default, progress=sd_prob_progress)
-        st.caption("Single Dummy Probabilities Dataframe")
-        streamlitlib.ShowDataFrameTable(sd_probs_df.to_pandas(), key='sd_probs_df')
+        sd_prob_progress = st.progress(0,f"Calculating Single Dummy Probabilities from {st.session_state.single_dummy_sample_count} Samples")
+        sd_cache_d, sd_probs_df = calculate_sd_probs(df, st.session_state.single_dummy_sample_count, progress=sd_prob_progress)
+        st.caption(f"Single Dummy Probabilities Dataframe Using {st.session_state.single_dummy_sample_count} Samples")
+        ShowDataFrameTable(sd_probs_df, key='sd_probs_df')
 
-        scores_d, sd_scores_df = calculate_sd_scores()
-        st.caption("Single Dummy Scores Dataframe")
-        streamlitlib.ShowDataFrameTable(sd_scores_df.to_pandas(), key='sd_scores_df')
+        scores_d, scores_df = calculate_scores()
+        st.caption("Scores Dataframe (not vul, vul)")
+        ShowDataFrameTable(scores_df, key='scores_df')
 
         sd_expected_values_df = calculate_sd_expected_values(df, sd_cache_d, scores_d)
-        st.caption("Expected Values Dataframe")
-        streamlitlib.ShowDataFrameTable(sd_expected_values_df.to_pandas(), key='sd_expected_values_df')
+        st.caption("Single Dummy Expected Values Dataframe")
+        ShowDataFrameTable(sd_expected_values_df, key='sd_expected_values_df')
 
         sd_best_contract_df = calculate_best_contracts(sd_expected_values_df)
-        st.caption("Best Contracts Dataframe")
-        streamlitlib.ShowDataFrameTable(sd_best_contract_df.to_pandas(), key='sd_best_contract_df')
+        st.caption("Single Dummy Best Contracts Dataframe")
+        ShowDataFrameTable(sd_best_contract_df, key='sd_best_contract_df')
 
-        merged_df = pl.concat([str_df,dd_tricks_df,par_df,dd_score_df,sd_probs_df,sd_scores_df,sd_expected_values_df,sd_best_contract_df],how='horizontal')
+        merged_df = pl.concat([str_df,dd_tricks_df,par_df,dd_score_df,sd_probs_df,scores_df,sd_expected_values_df,sd_best_contract_df],how='horizontal')
         #st.caption("Merged Dataframe")
-        #streamlitlib.ShowDataFrameTable(merged_df.to_pandas(), key='merged_df')
+        #ShowDataFrameTable(merged_df, key='merged_df')
         augmented_df = create_augmented_df(merged_df)
         st.caption("Everything Dataframe")
-        streamlitlib.ShowDataFrameTable(augmented_df.to_pandas(), key='augmented_df')
+        ShowDataFrameTable(augmented_df, key='augmented_df')
 
-        display_experiments(augmented_df)
+        # todo: display_experiments(augmented_df)
+
+        st.caption("End of Calculations")
 
 
 def create_sidebar():
     st.sidebar.caption('Build:'+app_datetime)
 
+    # example valid urls
+    #default_url = 'https://raw.githubusercontent.com/BSalita/Calculate_PBN_Results/master/DDS_Camrose24_1-%20BENCAM22%20v%20WBridge5.pbn'
+    #default_url = 'file://c:/sw/bridge/ML-Contract-Bridge/src/Calculate_PBN_Results/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
+    #default_url = r'file://c:\sw/bridge\ML-Contract-Bridge\src\Calculate_PBN_Results/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
+    #default_url = r'file://DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
     default_url = 'https://raw.githubusercontent.com/BSalita/Calculate_PBN_Results/master/DDS_Camrose24_1-%20BENCAM22%20v%20WBridge5.pbn'
-    url = st.sidebar.text_input('Enter PBN URL:', default_url, key='text_input_url') # on_change=LoadPage)
+    st.sidebar.text_input('Enter PBN URL:', default_url, key='text_input_url',help='Enter a URL or pathless local file name.') # on_change=LoadPage)
+    st.sidebar.button('Go', on_click=LoadPage)
 
-    if url is not None and url != '':
-        LoadPage(url)
+    st.sidebar.number_input('Single Dummy Sample Count',value=sd_productions_default,key='single_dummy_sample_count',min_value=1,max_value=1000,step=1,help='Number of random deals to generate for calculating single dummy probabilities. Larger number (10 to 30) is more accurate but slower. Use 1 to 5 for fast, less accurate results.')
 
 
 if __name__ == '__main__':
 
     # Configurations
     app_datetime = datetime.fromtimestamp(pathlib.Path(__file__).stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
-    pbn_filename_default = 'DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'  # local filename
+    #pbn_filename_default = 'DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'  # local filename
     sd_productions_default = 2  # number of random deals to generate for calculating single dummy probabilities. Use smaller number for testing.
 
     with st.container():
 
         st.title("Calculate PBN Deal Statistics")
         app_info()
+        st.caption("*Start by clicking the Go button on the left sidebar.*")
+        statistics_container = st.container()
 
-        create_sidebar()
-
+    create_sidebar()
+    
