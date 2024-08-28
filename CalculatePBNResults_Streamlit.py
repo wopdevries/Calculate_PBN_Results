@@ -476,6 +476,7 @@ def LoadPage():
 
 
 def create_sidebar():
+    global show_sql_query
     st.sidebar.caption('Build:'+app_datetime)
 
     # example valid urls
@@ -489,7 +490,7 @@ def create_sidebar():
 
     st.sidebar.number_input('Single Dummy Sample Count',value=sd_productions_default,key='single_dummy_sample_count',min_value=1,max_value=1000,step=1,help='Number of random deals to generate for calculating single dummy probabilities. Larger number (10 to 30) is more accurate but slower. Use 1 to 5 for fast, less accurate results.')
 
-    st.sidebar.checkbox('Show SQL Query',value=show_sql_query,key='show_sql_query')
+    show_sql_query = st.sidebar.checkbox('Show SQL Query',value=show_sql_query_default,key='show_sql_query_checkbox',help='Show SQL used to query dataframes.')
 
 if __name__ == '__main__':
 
@@ -497,7 +498,7 @@ if __name__ == '__main__':
     app_datetime = datetime.fromtimestamp(pathlib.Path(__file__).stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
     #pbn_filename_default = 'DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'  # local filename
     sd_productions_default = 2  # number of random deals to generate for calculating single dummy probabilities. Use smaller number for testing.
-    show_sql_query = True
+    show_sql_query_default = True
 
     with st.container():
 
