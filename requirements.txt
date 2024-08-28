@@ -1,5 +1,6 @@
 pandas
 polars
+duckdb
 fsspec
 endplay
 streamlit
