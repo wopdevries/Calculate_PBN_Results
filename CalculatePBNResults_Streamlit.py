@@ -338,10 +338,12 @@ def display_experiments(df):
         for k,v in g:
             st.caption(f"Describe {k[2]} {d} ({k[0]}-{k[1]}) ParScore_Diff_{d}")
             sql_query = f"SUMMARIZE SELECT ParScore_Diff_{d} FROM df WHERE Room='{k[2]}'"
-            ShowDataFrameTable(df, query=sql_query, key=f'ParScore_Diff_{d+'_'.join(k)}_describe')
+            ShowDataFrameTable(df, query=sql_query, key=f"ParScore_Diff_{d+'_'.join(k)}_describe")
 
         return
         # sum over Par_Diff_NS for all, bencam22, wbridge5
+
+        # todo: change f' to f" for all f strings
         all, ns, ew = df[f'Par_Diff_{d}'].sum(),df[df['N'].eq('BENCAM22')]['Par_Diff_NS'].sum(),df[df['N'].eq('WBridge5')]['Par_Diff_NS'].sum()
         st.write(f"Sum of Par_Diff_NS: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
 
