@@ -10,7 +10,7 @@ Project to calculate bridge game statistics from a PBN file. Contains a standalo
 # Installation:
 1. git clone https://github.com/BSalita/Calculate_PBN_Results
 2. pip install -U -r requirements.txt
+3. streamlit run CalculatePBNResults_Streamlit.py
 
 # Dependencies:
-pandas
-endplay
+See requirements.txt
