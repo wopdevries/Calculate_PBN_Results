@@ -7,6 +7,7 @@ import pathlib
 import fsspec
 import pandas as pd # only used for __version__ for now. might need for plotting later as pandas plotting support is better than polars.
 import polars as pl
+import duckdb
 from collections import defaultdict
 from datetime import datetime, timezone
 import sys
@@ -34,7 +35,7 @@ def create_df_from_pbn(boards):
     return df
 
 
-def calculate_dd_tricks_pars_scores(df, progress=None):
+def calculate_DDTricks_pars_scores(df, progress=None):
 
     NSEW_direction_order = [0, 2, 1, 3]
     SHDCN_suit_order = [3, 2, 1, 0, 4]
@@ -70,19 +71,19 @@ def calculate_dd_tricks_pars_scores(df, progress=None):
     par_scores_ns = [parlist.score for parlist in pars]
     par_scores_ew = [-score for score in par_scores_ns]
     par_contracts = [', '.join([str(contract.level) + 'SHDCN'[int(contract.denom)] + contract.declarer.abbr + contract.penalty.abbr + ('' if contract.result == 0 else '+'+str(contract.result) if contract.result > 0 else str(contract.result)) for contract in parlist]) for parlist in pars]
-    par_df = pl.DataFrame({'Par_Score_NS': par_scores_ns, 'Par_Score_EW': par_scores_ew, 'Par_Contract': par_contracts},orient='row')
+    par_df = pl.DataFrame({'ParScore_NS': par_scores_ns, 'ParScore_EW': par_scores_ew, 'ParContract': par_contracts},orient='row')
 
     # Create dataframe of double dummy tricks per direction and suit
-    dd_tricks_rows = [[sd[suit][direction] for direction in NSEW_direction_order for suit in SHDCN_suit_order] for sd in t_t]
-    dd_tricks_df = pl.DataFrame(dd_tricks_rows, schema=['_'.join(['DD_Tricks', d, s]) for d in 'NSEW' for s in 'CDHSN'],orient='row')
+    DDTricks_rows = [[sd[suit][direction] for direction in NSEW_direction_order for suit in SHDCN_suit_order] for sd in t_t]
+    DDTricks_df = pl.DataFrame(DDTricks_rows, schema=['_'.join(['DDTricks', d, s]) for d in 'NSEW' for s in 'CDHSN'],orient='row')
 
     def Tricks_To_Score(sd):
         return [Contract(level=level, denom=suit, declarer=direction, penalty=Penalty.passed if sd[suit][direction] - 6 - level >= 0 else Penalty.doubled, result=sd[suit][direction] - 6 - level).score(0) for direction in NSEW_direction_order for suit in SHDCN_suit_order for level in range(1, 8)]
 
     dd_score_rows = [Tricks_To_Score(sd) for sd in t_t]
-    dd_score_df = pl.DataFrame(dd_score_rows, schema=['_'.join(['DD_Score', str(l) + s, d]) for d in 'NSEW' for s in 'CDHSN' for l in range(1, 8)],orient='row')
+    dd_score_df = pl.DataFrame(dd_score_rows, schema=['_'.join(['DDScore', str(l) + s, d]) for d in 'NSEW' for s in 'CDHSN' for l in range(1, 8)],orient='row')
 
-    return dd_tricks_df, par_df, dd_score_df
+    return DDTricks_df, par_df, dd_score_df
 
 
 # todo: could save a couple seconds by creating dict of deals
@@ -257,7 +258,7 @@ def create_best_contracts(df):
 
 def calculate_best_contracts(sd_exp_df):
     sd_best_contract_l = create_best_contracts(sd_exp_df) #sd_exp_df.to_pandas().apply(create_best_contracts,axis='columns')
-    sd_best_contract_df = pl.DataFrame(sd_best_contract_l,schema=['Exp_Max_Col','Exp_Max','Exp_Max_NS','Best_Contract'],orient='row')
+    sd_best_contract_df = pl.DataFrame(sd_best_contract_l,schema=['ExpMaxScore_Col','Exp_Max','ExpMaxScore_NS','BestContract'],orient='row')
     return sd_best_contract_df
 
 
@@ -270,7 +271,7 @@ def convert_contract_to_declarer(df):
     return [None if c == 'PASS' else c[2] for c in df['Contract']] # extract declarer from contract
 
 
-def convert_declarer_to_declarer_name(df):
+def convert_declarer_to_DeclarerName(df):
     return [None if d is None else df[d][i] for i,d in enumerate(df['Declarer'])] # extract declarer name using declarer direction as the lookup key
 
 
@@ -282,104 +283,112 @@ def convert_contract_to_tricks(df):
     return [None if c == 'PASS' else int(c[0])+6+r for c,r in zip(df['Contract'],df['Result'])] # create tricks from contract and result
 
 
-def convert_contract_to_dd_tricks(df):
-    return [None if c == 'PASS' else df['_'.join(['DD_Tricks',d,c[1]])][i] for i,(c,d) in enumerate(zip(df['Contract'],df['Declarer']))] # extract double dummy tricks using contract and declarer as the lookup keys
+def convert_contract_to_DDTricks(df):
+    return [None if c == 'PASS' else df['_'.join(['DDTricks',d,c[1]])][i] for i,(c,d) in enumerate(zip(df['Contract'],df['Declarer']))] # extract double dummy tricks using contract and declarer as the lookup keys
 
 
-def convert_score_to_score(r):
-    score_split = r['Score'].split()
-    assert len(score_split) == 2, f"score_split:{score_split}"
-    assert score_split[0] in ['NS','EW'], f"score_split:{score_split[0]}"
-    assert score_split[1][0] == '-' or str.isdigit(score_split[1][0]), f"score_split:{score_split[1]}"
-    score_split_direction = score_split[0]
-    score_split_value = score_split[1]
-    score_value = -int(score_split_value) if score_split_value[0] == '-' else int(score_split_value)
-    return score_value if score_split_direction == 'NS' else -score_value
+def convert_score_to_score(df):
+    scores = []
+    for d in df.to_dicts():
+        score_split = d['Score'].split()
+        assert len(score_split) == 2, f"score_split:{score_split}"
+        assert score_split[0] in ['NS','EW'], f"score_split:{score_split[0]}"
+        assert score_split[1][0] == '-' or str.isdigit(score_split[1][0]), f"score_split:{score_split[1]}"
+        score_split_direction = score_split[0]
+        score_split_value = score_split[1]
+        score_value = -int(score_split_value) if score_split_value[0] == '-' else int(score_split_value)
+        scores.append(score_value if score_split_direction == 'NS' else -score_value)
+    return scores
 
 
-def create_augmented_df(merged_df):
-    augmented_df = merged_df.clone()
-    augmented_df = augmented_df.rename({'North':'N','East':'E','South':'S','West':'W'}) # todo: is this really better?
+def create_augmented_df(df):
+    df = df.clone()
+    df = df.rename({'North':'N','East':'E','South':'S','West':'W'}) # todo: is this really better?
 
-    augmented_df = augmented_df.with_columns(
-        pl.Series('Contract',convert_contract_to_contract(augmented_df),pl.String,strict=False), # can have nulls or Strings
+    df = df.with_columns(
+        pl.Series('Contract',convert_contract_to_contract(df),pl.String,strict=False), # can have nulls or Strings
     )
-    augmented_df = augmented_df.with_columns(
-        pl.Series('Declarer',convert_contract_to_declarer(augmented_df),pl.String,strict=False), # can have nulls or Strings
+    df = df.with_columns(
+        pl.Series('Declarer',convert_contract_to_declarer(df),pl.String,strict=False), # can have nulls or Strings
     )
-    augmented_df = augmented_df.with_columns(
-        pl.Series('Declarer_Name',convert_declarer_to_declarer_name(augmented_df),pl.String,strict=False), # can have nulls or Strings
-        pl.Series('Result',convert_contract_to_result(augmented_df),pl.Int8,strict=False), # can have nulls or Int8
+    df = df.with_columns(
+        pl.Series('DeclarerName',convert_declarer_to_DeclarerName(df),pl.String,strict=False), # can have nulls or Strings
+        pl.Series('Result',convert_contract_to_result(df),pl.Int8,strict=False), # can have nulls or Int8
     )
-    augmented_df = augmented_df.with_columns(
-        pl.Series('Tricks',convert_contract_to_tricks(augmented_df),pl.UInt8,strict=False), # can have nulls or UInt8
-        pl.Series('DD_Tricks',convert_contract_to_dd_tricks(augmented_df),pl.UInt8,strict=False), # can have nulls or UInt8
-        #pl.Series('Score_NS',convert_score_to_score(augmented_df),pl.Int16),
+    df = df.with_columns(
+        pl.Series('Tricks',convert_contract_to_tricks(df),pl.UInt8,strict=False), # can have nulls or UInt8
+        pl.Series('DDTricks',convert_contract_to_DDTricks(df),pl.UInt8,strict=False), # can have nulls or UInt8
+        pl.Series('Score_NS',convert_score_to_score(df),pl.Int16),
     )
-    augmented_df = augmented_df.with_columns(
-        #pl.Series('Score_Par_Diff_NS',(augmented_df['Score_NS']-augmented_df['Par_Score_NS']),pl.Int16,strict=False), # can have nulls or Int16
+    df = df.with_columns(
+        pl.Series('ParScore_Diff_NS',(df['Score_NS']-df['ParScore_NS']),pl.Int16),
         # needs to have .cast(pl.Int8) because left and right are both UInt8 which goofs up the subtraction.
-        pl.Series('Tricks_DDTricks_Diff',(augmented_df['Tricks'].cast(pl.Int8)-augmented_df['DD_Tricks'].cast(pl.Int8)),pl.Int8,strict=False), # can have nulls or Int8
-        #pl.Series('Score_ExpMax_Diff_NS',(augmented_df['Score_NS']-augmented_df['Exp_Max_NS']),pl.Float32,strict=False), # can have nulls or Float32
+        pl.Series('DDTricks_Diff',(df['Tricks'].cast(pl.Int8)-df['DDTricks'].cast(pl.Int8)),pl.Int8,strict=False), # can have nulls or Int8
+        pl.Series('ExpMaxScore_Diff_NS',(df['Score_NS']-df['ExpMaxScore_NS']),pl.Float32),
     )
-    return augmented_df
+    return df
 
 
-def display_experiments(augmented_df):
+def display_experiments(df):
 
-    st.header("Following cells contain WIP experiments with comparative statistics; BENCAM22 vs WBridge5, Open vs Closed rooms, Tricks vs DD, par diffs, expected max diffs.")
+    st.info("Following cells contain WIP experiments with comparative statistics; NS vs EW, Open vs Closed rooms, Tricks vs DD, par diffs, expected max value diffs.")
 
-    # describe() over Par_Diff_NS for all, bencam22, wbridge5
-    st.write('Describe North, BENCAM22, Par_Diff_NS:')
-    st.write(augmented_df[augmented_df['N'].eq('BENCAM22')]['Par_Diff_NS'].describe())
-    st.write('Describe North, WBridge5, Par_Diff_NS:')
-    st.write(augmented_df[augmented_df['N'].eq('WBridge5')]['Par_Diff_NS'].describe())
+    for d in ['NS','EW']:
+        g = df.group_by([d[0],d[1],'Room'])
+        for k,v in g:
+            st.caption(f"Describe {k[2]} {d} ({k[0]}-{k[1]}) ParScore_Diff_{d}")
+            sql_query = f"SUMMARIZE SELECT ParScore_Diff_{d} FROM df WHERE Room='{k[2]}'"
+            ShowDataFrameTable(df, query=sql_query, key=f'ParScore_Diff_{d+'_'.join(k)}_describe')
 
-    # sum over Par_Diff_NS for all, bencam22, wbridge5
-    all, bencam22, wbridge5 = augmented_df['Par_Diff_NS'].sum(),augmented_df[augmented_df['N'].eq('BENCAM22')]['Par_Diff_NS'].sum(),augmented_df[augmented_df['N'].eq('WBridge5')]['Par_Diff_NS'].sum()
-    st.write(f"Sum of Par_Diff_NS: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        return
+        # sum over Par_Diff_NS for all, bencam22, wbridge5
+        all, ns, ew = df[f'Par_Diff_{d}'].sum(),df[df['N'].eq('BENCAM22')]['Par_Diff_NS'].sum(),df[df['N'].eq('WBridge5')]['Par_Diff_NS'].sum()
+        st.write(f"Sum of Par_Diff_NS: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
 
-    # frequency where par was exceeded for all, bencam22, wbridge5
-    all, bencam22, wbridge5 = sum(augmented_df['Par_Diff_NS'].gt(0)),sum(augmented_df['N'].eq('BENCAM22')&augmented_df['Par_Diff_NS'].gt(0)),sum(augmented_df['N'].eq('WBridge5')&augmented_df['Par_Diff_NS'].gt(0))
-    st.write(f"Frequency where exceeding Par: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        # frequency where par was exceeded for all, bencam22, wbridge5
+        all, bencam22, wbridge5 = sum(df[f'Par_Diff_{d}'].gt(0)),sum(df['N'].eq('BENCAM22')&df['Par_Diff_NS'].gt(0)),sum(df['N'].eq('WBridge5')&df['Par_Diff_NS'].gt(0))
+        st.write(f"Frequency where exceeding Par: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
 
-    # describe() over DD_Tricks_Diff for all, bencam22, wbridge5
-    st.write('Describe Declarer, BENCAM22, DD_Tricks_Diff:')
-    st.write(augmented_df[augmented_df['Declarer_Name'].eq('BENCAM22')]['DD_Tricks_Diff'].describe())
-    st.write('Describe Declarer, WBridge5, DD_Tricks_Diff:')
-    st.write(augmented_df[augmented_df['Declarer_Name'].eq('WBridge5')]['DD_Tricks_Diff'].describe())
+        # describe() over DDTricks_Diff for all, bencam22, wbridge5
+        st.write('Describe Declarer, BENCAM22, DDTricks_Diff:')
+        st.write(df[df['DeclarerName'].eq('BENCAM22')]['DDTricks_Diff'].describe())
+        st.write('Describe Declarer, WBridge5, DDTricks_Diff:')
+        st.write(df[df['DeclarerName'].eq('WBridge5')]['DDTricks_Diff'].describe())
 
-    # sum over DD_Tricks_Diff for all, bencam22, wbridge5
-    all, bencam22, wbridge5 = augmented_df['DD_Tricks_Diff'].sum(),augmented_df[augmented_df['Declarer_Name'].eq('BENCAM22')]['DD_Tricks_Diff'].sum(),augmented_df[augmented_df['Declarer_Name'].eq('WBridge5')]['DD_Tricks_Diff'].sum()
-    st.write(f"Sum of DD_Tricks_Diff: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        # sum over DDTricks_Diff for all, bencam22, wbridge5
+        all, bencam22, wbridge5 = df['DDTricks_Diff'].sum(),df[df['DeclarerName'].eq('BENCAM22')]['DDTricks_Diff'].sum(),df[df['DeclarerName'].eq('WBridge5')]['DDTricks_Diff'].sum()
+        st.write(f"Sum of DDTricks_Diff: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
 
-    # frequency where Tricks > DD for all, bencam22, wbridge5
-    all, bencam22, wbridge5 = sum(augmented_df['DD_Tricks_Diff'].notna() & augmented_df['DD_Tricks_Diff'].gt(0)),sum(augmented_df[augmented_df['Declarer_Name'].eq('BENCAM22')]['DD_Tricks_Diff'].gt(0)),sum(augmented_df[augmented_df['Declarer_Name'].eq('WBridge5')]['DD_Tricks_Diff'].gt(0))
-    st.write(f"Frequency where Tricks > DD: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        # frequency where Tricks > DD for all, bencam22, wbridge5
+        all, bencam22, wbridge5 = sum(df['DDTricks_Diff'].notna() & df['DDTricks_Diff'].gt(0)),sum(df[df['DeclarerName'].eq('BENCAM22')]['DDTricks_Diff'].gt(0)),sum(df[df['DeclarerName'].eq('WBridge5')]['DDTricks_Diff'].gt(0))
+        st.write(f"Frequency where Tricks > DD: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
 
-    # frequency where Tricks < DD for all, bencam22, wbridge5
-    all, bencam22, wbridge5 = sum(augmented_df['DD_Tricks_Diff'].notna() & augmented_df['DD_Tricks_Diff'].lt(0)),sum(augmented_df[augmented_df['Declarer_Name'].eq('BENCAM22')]['DD_Tricks_Diff'].lt(0)),sum(augmented_df[augmented_df['Declarer_Name'].eq('WBridge5')]['DD_Tricks_Diff'].lt(0))
-    st.write(f"Frequency where Tricks < DD: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        # frequency where Tricks < DD for all, bencam22, wbridge5
+        all, bencam22, wbridge5 = sum(df['DDTricks_Diff'].notna() & df['DDTricks_Diff'].lt(0)),sum(df[df['DeclarerName'].eq('BENCAM22')]['DDTricks_Diff'].lt(0)),sum(df[df['DeclarerName'].eq('WBridge5')]['DDTricks_Diff'].lt(0))
+        st.write(f"Frequency where Tricks < DD: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
 
-    # describe() over Par_Diff_NS for all, open, closed
-    st.write(augmented_df['Par_Diff_NS'].describe(),augmented_df[augmented_df['Room'].eq('Open')]['Par_Diff_NS'].describe(),augmented_df[augmented_df['Room'].eq('Closed')]['Par_Diff_NS'].describe())
-    # sum over Par_Diff_NS for all, bencam22, wbridge5
-    all, bencam22, wbridge5 = augmented_df['Par_Diff_NS'].sum(),augmented_df[augmented_df['Room'].eq('Open')]['Par_Diff_NS'].sum(),augmented_df[augmented_df['Room'].eq('Closed')]['Par_Diff_NS'].sum()
-    st.write(f"Sum of Par_Diff_NS: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
-    all, open, closed = sum(augmented_df['Par_Diff_NS'].gt(0)),sum(augmented_df['Room'].eq('Open')&augmented_df['Par_Diff_NS'].gt(0)),sum(augmented_df['Room'].eq('Closed')&augmented_df['Par_Diff_NS'].gt(0))
-    st.write(f"Frequency where exceeding Par: All:{all} Open:{open} Closed:{closed} Open-Closed:{open-closed}")
+        # describe() over Par_Diff_NS for all, open, closed
+        st.write(df['Par_Diff_NS'].describe(),df[df['Room'].eq('Open')]['Par_Diff_NS'].describe(),df[df['Room'].eq('Closed')]['Par_Diff_NS'].describe())
+        # sum over Par_Diff_NS for all, bencam22, wbridge5
+        all, bencam22, wbridge5 = df['Par_Diff_NS'].sum(),df[df['Room'].eq('Open')]['Par_Diff_NS'].sum(),df[df['Room'].eq('Closed')]['Par_Diff_NS'].sum()
+        st.write(f"Sum of Par_Diff_NS: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        all, open, closed = sum(df['Par_Diff_NS'].gt(0)),sum(df['Room'].eq('Open')&df['Par_Diff_NS'].gt(0)),sum(df['Room'].eq('Closed')&df['Par_Diff_NS'].gt(0))
+        st.write(f"Frequency where exceeding Par: All:{all} Open:{open} Closed:{closed} Open-Closed:{open-closed}")
 
-    # describe() over Exp_Max_Diff_NS for all, open, closed
-    st.write(augmented_df['Exp_Max_Diff_NS'].describe(),augmented_df[augmented_df['Room'].eq('Open')]['Exp_Max_Diff_NS'].describe(),augmented_df[augmented_df['Room'].eq('Closed')]['Exp_Max_Diff_NS'].describe())
-    # sum over Exp_Max_Diff_NS for all, bencam22, wbridge5
-    all, bencam22, wbridge5 = augmented_df['Exp_Max_Diff_NS'].sum(),augmented_df[augmented_df['Room'].eq('Open')]['Exp_Max_Diff_NS'].sum(),augmented_df[augmented_df['Room'].eq('Closed')]['Exp_Max_Diff_NS'].sum()
-    st.write(f"Sum of Exp_Max_Diff_NS: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
-    all, open, closed = sum(augmented_df['Exp_Max_Diff_NS'].gt(0)),sum(augmented_df['Room'].eq('Open')&augmented_df['Exp_Max_Diff_NS'].gt(0)),sum(augmented_df['Room'].eq('Closed')&augmented_df['Exp_Max_Diff_NS'].gt(0))
-    st.write(f"Frequency where exceeding Exp_Max_Diff_NS: All:{all} Open:{open} Closed:{closed} Open-Closed:{open-closed}")
+        # describe() over ExpMaxScore_Diff_NS for all, open, closed
+        st.write(df['ExpMaxScore_Diff_NS'].describe(),df[df['Room'].eq('Open')]['ExpMaxScore_Diff_NS'].describe(),df[df['Room'].eq('Closed')]['ExpMaxScore_Diff_NS'].describe())
+        # sum over ExpMaxScore_Diff_NS for all, bencam22, wbridge5
+        all, bencam22, wbridge5 = df['ExpMaxScore_Diff_NS'].sum(),df[df['Room'].eq('Open')]['ExpMaxScore_Diff_NS'].sum(),df[df['Room'].eq('Closed')]['ExpMaxScore_Diff_NS'].sum()
+        st.write(f"Sum of ExpMaxScore_Diff_NS: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        all, open, closed = sum(df['ExpMaxScore_Diff_NS'].gt(0)),sum(df['Room'].eq('Open')&df['ExpMaxScore_Diff_NS'].gt(0)),sum(df['Room'].eq('Closed')&df['ExpMaxScore_Diff_NS'].gt(0))
+        st.write(f"Frequency where exceeding ExpMaxScore_Diff_NS: All:{all} Open:{open} Closed:{closed} Open-Closed:{open-closed}")
 
 
-def ShowDataFrameTable(df, key):
-    return streamlitlib.ShowDataFrameTable(df.to_pandas(), key)
+def ShowDataFrameTable(df, key, query='SELECT * FROM df'):
+    if show_sql_query:
+        st.caption(f"SQL Query: {query}")
+    df = duckdb.execute(query).df() # returns a pandas dataframe
+    return streamlitlib.ShowDataFrameTable(df, key)
 
 
 def app_info():
@@ -401,7 +410,7 @@ def LoadPage():
 
     with statistics_container:
         url = st.session_state.text_input_url
-        st.info(f"Loading {url}") # using protocol:{get_url_protocol(url)}")
+        st.caption(f"Loading {url}") # using protocol:{get_url_protocol(url)}")
 
         if url is None or url == '' or (get_url_protocol(url) == 'file' and ('/' in url and '\\' in url and '&' in url)):
             return
@@ -428,10 +437,10 @@ def LoadPage():
         )
         ShowDataFrameTable(str_df, key='info_df')
 
-        dd_tricks_progress = st.progress(0,"Calculating Double Dummy Tricks")
-        dd_tricks_df, par_df, dd_score_df = calculate_dd_tricks_pars_scores(df, progress=dd_tricks_progress)
+        DDTricks_progress = st.progress(0,"Calculating Double Dummy Tricks")
+        DDTricks_df, par_df, dd_score_df = calculate_DDTricks_pars_scores(df, progress=DDTricks_progress)
         st.caption("Double Dummy Tricks Dataframe")
-        ShowDataFrameTable(dd_tricks_df, key='dd_tricks_df')
+        ShowDataFrameTable(DDTricks_df, key='DDTricks_df')
         st.caption("Par Scores Dataframe")
         ShowDataFrameTable(par_df, key='par_df')
         st.caption("Double Dummy Scores Dataframe")
@@ -454,16 +463,16 @@ def LoadPage():
         st.caption("Single Dummy Best Contracts Dataframe")
         ShowDataFrameTable(sd_best_contract_df, key='sd_best_contract_df')
 
-        merged_df = pl.concat([str_df,dd_tricks_df,par_df,dd_score_df,sd_probs_df,scores_df,sd_expected_values_df,sd_best_contract_df],how='horizontal')
+        merged_df = pl.concat([str_df,DDTricks_df,par_df,dd_score_df,sd_probs_df,scores_df,sd_expected_values_df,sd_best_contract_df],how='horizontal')
         #st.caption("Merged Dataframe")
         #ShowDataFrameTable(merged_df, key='merged_df')
         augmented_df = create_augmented_df(merged_df)
         st.caption("Everything Dataframe")
         ShowDataFrameTable(augmented_df, key='augmented_df')
 
-        # todo: display_experiments(augmented_df)
+        #display_experiments(augmented_df)
 
-        st.caption("End of Calculations")
+        st.caption("All Done.")
 
 
 def create_sidebar():
@@ -480,6 +489,7 @@ def create_sidebar():
 
     st.sidebar.number_input('Single Dummy Sample Count',value=sd_productions_default,key='single_dummy_sample_count',min_value=1,max_value=1000,step=1,help='Number of random deals to generate for calculating single dummy probabilities. Larger number (10 to 30) is more accurate but slower. Use 1 to 5 for fast, less accurate results.')
 
+    st.sidebar.checkbox('Show SQL Query',value=show_sql_query,key='show_sql_query')
 
 if __name__ == '__main__':
 
@@ -487,12 +497,13 @@ if __name__ == '__main__':
     app_datetime = datetime.fromtimestamp(pathlib.Path(__file__).stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
     #pbn_filename_default = 'DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'  # local filename
     sd_productions_default = 2  # number of random deals to generate for calculating single dummy probabilities. Use smaller number for testing.
+    show_sql_query = True
 
     with st.container():
 
         st.title("Calculate PBN Deal Statistics")
         app_info()
-        st.caption("*Start by clicking the Go button on the left sidebar.*")
+        st.info("*Start by clicking the Go button on the left sidebar.*")
         statistics_container = st.container()
 
     create_sidebar()
