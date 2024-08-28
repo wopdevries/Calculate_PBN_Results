@@ -180,7 +180,7 @@ def calculate_sd_probs(df, sd_productions=100, progress=None):
     for i,deal in enumerate(deals):
         if progress:
             percent_complete = int(i*100/len(deals))
-            progress.progress(percent_complete,f"{percent_complete}%: {i} of {len(deals)} single dummies calculated using {st.session_state.single_dummy_sample_count} samples")
+            progress.progress(percent_complete,f"{percent_complete}%: {i} of {len(deals)} single dummies calculated using {sd_productions} samples")
         # st.write(f"{percent_complete}%: {i} of {len(deals)} boards. deal:{deal}")
         if deal not in sd_cache_d:
             sd_cache_d[deal] = calculate_single_dummy_probabilities(deal, sd_productions) # all combinations of declarer pair direction, declarer direciton, suit, tricks taken
@@ -336,9 +336,9 @@ def display_experiments(df):
     for d in ['NS','EW']:
         g = df.group_by([d[0],d[1],'Room'])
         for k,v in g:
-            st.caption(f"Describe {k[2]} {d} ({k[0]}-{k[1]}) ParScore_Diff_{d}")
-            sql_query = f"SUMMARIZE SELECT ParScore_Diff_{d} FROM df WHERE Room='{k[2]}'"
-            ShowDataFrameTable(df, query=sql_query, key=f"ParScore_Diff_{d+'_'.join(k)}_describe")
+            st.caption(f"Summarize {k[2]} {d} ({k[0]}-{k[1]}) ParScore_Diff_{d}")
+            sql_query = f"SUMMARIZE SELECT ParScore_Diff_{d}, DDTricks_Diff, ExpMaxScore_Diff_{d} FROM df WHERE Room='{k[2]}'" # DDTicks is directionally invariant
+            ShowDataFrameTable(df, query=sql_query, key=f"display_experiments_{d+'_'.join(k)}_summarize")
 
         return
         # sum over Par_Diff_NS for all, bencam22, wbridge5
@@ -387,10 +387,20 @@ def display_experiments(df):
 
 
 def ShowDataFrameTable(df, key, query='SELECT * FROM df'):
-    if show_sql_query:
+    if st.session_state.show_sql_query:
         st.caption(f"SQL Query: {query}")
-    df = duckdb.execute(query).df() # returns a pandas dataframe
-    return streamlitlib.ShowDataFrameTable(df, key)
+    try:
+        df = duckdb.sql(query).df() # returns a pandas dataframe
+    except Exception as e:
+        st.error(f"Invalid SQL Query: {query} {e}")
+        return True
+    try:
+        streamlitlib.ShowDataFrameTable(df, key)
+    except Exception as e:
+        st.error(f"Invalid SQL Query on Dataframe: {query} {e}")
+        return True
+    return False
+
 
 
 def app_info():
@@ -408,77 +418,98 @@ def get_url_protocol(path):
     return options['protocol']
 
 
+def chat_input_on_submit():
+    prompt = st.session_state.main_prompt_chat_input
+    ShowDataFrameTable(st.session_state.df, query=prompt, key='user_query_main_doit')
+
+
+def sample_count_on_change():
+    st.session_state.single_dummy_sample_count = st.session_state.create_sidebar_single_dummy_sample_count
+    if 'df' in st.session_state:
+        LoadPage()
+
+
+def sql_query_on_change():
+    st.session_state.show_sql_query = st.session_state.create_sidebar_show_sql_query_checkbox
+    if 'df' in st.session_state:
+        LoadPage()
+    #pass # do nothing
+
+
 def LoadPage():
 
-    with statistics_container:
-        url = st.session_state.text_input_url
-        st.caption(f"Loading {url}") # using protocol:{get_url_protocol(url)}")
+    #with st.session_state.chat_container:
 
-        if url is None or url == '' or (get_url_protocol(url) == 'file' and ('/' in url and '\\' in url and '&' in url)):
-            return
+    url = st.session_state.create_sidebar_text_input_url
+    st.caption(f"Loading {url}") # using protocol:{get_url_protocol(url)}")
 
-        with st.spinner("Loading in progress ..."):
-            of = fsspec.open(url, mode='r', encoding='utf-8')
-            with of as f:
-                pbn_data = f.read()
+    if url is None or url == '' or (get_url_protocol(url) == 'file' and ('/' in url and '\\' in url and '&' in url)):
+        return
 
-        boards = pbn.loads(pbn_data)
+    with st.spinner("Loading in progress ..."):
+        of = fsspec.open(url, mode='r', encoding='utf-8')
+        with of as f:
+            pbn_data = f.read()
 
-        #st.write(f"Number of boards: {len(boards)}")
-        #st.write(vars(boards[0]))
+    boards = pbn.loads(pbn_data)
 
-        df = create_df_from_pbn(boards)
-        st.caption("PBN Dataframe")
-        # Other dataframe components don't do implicit str conversion like pl.DataFrame. Must manually convert object columns to strings.
-        str_df = df.clone()
-        str_df = str_df.with_columns(
-            pl.Series('deal',map(str,str_df['deal']),pl.String),
-            pl.Series('auction',map(lambda x: ', '.join(map(str,x[:3]))+' ...',str_df['auction']),pl.String),
-            pl.Series('play',map(lambda x: ', '.join(map(str,x[:3]))+' ...',str_df['play']),pl.String),
-            pl.Series('_contract',map(str,str_df['_contract']),pl.String),
-        )
-        ShowDataFrameTable(str_df, key='info_df')
+    #st.write(f"Number of boards: {len(boards)}")
+    #st.write(vars(boards[0]))
 
-        DDTricks_progress = st.progress(0,"Calculating Double Dummy Tricks")
-        DDTricks_df, par_df, dd_score_df = calculate_DDTricks_pars_scores(df, progress=DDTricks_progress)
-        st.caption("Double Dummy Tricks Dataframe")
-        ShowDataFrameTable(DDTricks_df, key='DDTricks_df')
-        st.caption("Par Scores Dataframe")
-        ShowDataFrameTable(par_df, key='par_df')
-        st.caption("Double Dummy Scores Dataframe")
-        ShowDataFrameTable(dd_score_df, key='dd_score_df')
+    df = create_df_from_pbn(boards)
+    st.caption("PBN Dataframe")
+    # Other dataframe components don't do implicit str conversion like pl.DataFrame. Must manually convert object columns to strings.
+    str_df = df.clone()
+    str_df = str_df.with_columns(
+        pl.Series('deal',map(str,str_df['deal']),pl.String),
+        pl.Series('auction',map(lambda x: ', '.join(map(str,x[:3]))+' ...',str_df['auction']),pl.String),
+        pl.Series('play',map(lambda x: ', '.join(map(str,x[:3]))+' ...',str_df['play']),pl.String),
+        pl.Series('_contract',map(str,str_df['_contract']),pl.String),
+    )
+    ShowDataFrameTable(str_df, key='LoadPage_pbn_df')
 
-        sd_prob_progress = st.progress(0,f"Calculating Single Dummy Probabilities from {st.session_state.single_dummy_sample_count} Samples")
-        sd_cache_d, sd_probs_df = calculate_sd_probs(df, st.session_state.single_dummy_sample_count, progress=sd_prob_progress)
-        st.caption(f"Single Dummy Probabilities Dataframe Using {st.session_state.single_dummy_sample_count} Samples")
-        ShowDataFrameTable(sd_probs_df, key='sd_probs_df')
+    DDTricks_progress = st.progress(0,"Calculating Double Dummy Tricks")
+    DDTricks_df, par_df, dd_score_df = calculate_DDTricks_pars_scores(df, progress=DDTricks_progress)
+    st.caption("Double Dummy Tricks Dataframe")
+    ShowDataFrameTable(DDTricks_df, key='DDTricks_df')
+    st.caption("Par Scores Dataframe")
+    ShowDataFrameTable(par_df, key='par_df')
+    st.caption("Double Dummy Scores Dataframe")
+    ShowDataFrameTable(dd_score_df, key='dd_score_df')
 
-        scores_d, scores_df = calculate_scores()
-        st.caption("Scores Dataframe (not vul, vul)")
-        ShowDataFrameTable(scores_df, key='scores_df')
+    sd_prob_progress = st.progress(0,f"Calculating Single Dummy Probabilities from {st.session_state.single_dummy_sample_count} Samples")
+    sd_cache_d, sd_probs_df = calculate_sd_probs(df, st.session_state.single_dummy_sample_count, progress=sd_prob_progress)
+    st.caption(f"Single Dummy Probabilities Dataframe Using {st.session_state.single_dummy_sample_count} Samples")
+    ShowDataFrameTable(sd_probs_df, key='sd_probs_df')
 
-        sd_expected_values_df = calculate_sd_expected_values(df, sd_cache_d, scores_d)
-        st.caption("Single Dummy Expected Values Dataframe")
-        ShowDataFrameTable(sd_expected_values_df, key='sd_expected_values_df')
+    scores_d, scores_df = calculate_scores()
+    st.caption("Scores Dataframe (not vul, vul)")
+    ShowDataFrameTable(scores_df, key='scores_df')
 
-        sd_best_contract_df = calculate_best_contracts(sd_expected_values_df)
-        st.caption("Single Dummy Best Contracts Dataframe")
-        ShowDataFrameTable(sd_best_contract_df, key='sd_best_contract_df')
+    sd_expected_values_df = calculate_sd_expected_values(df, sd_cache_d, scores_d)
+    st.caption("Single Dummy Expected Values Dataframe")
+    ShowDataFrameTable(sd_expected_values_df, key='sd_expected_values_df')
 
-        merged_df = pl.concat([str_df,DDTricks_df,par_df,dd_score_df,sd_probs_df,scores_df,sd_expected_values_df,sd_best_contract_df],how='horizontal')
-        #st.caption("Merged Dataframe")
-        #ShowDataFrameTable(merged_df, key='merged_df')
-        augmented_df = create_augmented_df(merged_df)
-        st.caption("Everything Dataframe")
-        ShowDataFrameTable(augmented_df, key='augmented_df')
+    sd_best_contract_df = calculate_best_contracts(sd_expected_values_df)
+    st.caption("Single Dummy Best Contracts Dataframe")
+    ShowDataFrameTable(sd_best_contract_df, key='sd_best_contract_df')
 
-        #display_experiments(augmented_df)
+    merged_df = pl.concat([str_df,DDTricks_df,par_df,dd_score_df,sd_probs_df,scores_df,sd_expected_values_df,sd_best_contract_df],how='horizontal')
+    #st.caption("Merged Dataframe")
+    #ShowDataFrameTable(merged_df, key='merged_df')
+    augmented_df = create_augmented_df(merged_df)
+    st.caption("Everything Dataframe")
+    ShowDataFrameTable(augmented_df, key='augmented_df')
 
-        st.caption("All Done.")
+    display_experiments(augmented_df)
+
+    st.session_state.df = augmented_df
+
+    st.caption("All dataframes have been calculated and displayed.")
+    st.caption("You may now enter SQL queries in the chat box below. Use *FROM df* to query the everything dataframe.")
 
 
 def create_sidebar():
-    global show_sql_query
     st.sidebar.caption('Build:'+app_datetime)
 
     # example valid urls
@@ -487,27 +518,30 @@ def create_sidebar():
     #default_url = r'file://c:\sw/bridge\ML-Contract-Bridge\src\Calculate_PBN_Results/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
     #default_url = r'file://DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
     default_url = 'https://raw.githubusercontent.com/BSalita/Calculate_PBN_Results/master/DDS_Camrose24_1-%20BENCAM22%20v%20WBridge5.pbn'
-    st.sidebar.text_input('Enter PBN URL:', default_url, key='text_input_url',help='Enter a URL or pathless local file name.') # on_change=LoadPage)
-    st.sidebar.button('Go', on_click=LoadPage)
+    st.sidebar.text_input('Enter PBN URL:', default_url, key='create_sidebar_text_input_url', help='Enter a URL or pathless local file name.') # , on_change=LoadPage
+    st.sidebar.button('Go', on_click=LoadPage, key='create_sidebar_go_button', help='Load PBN data from URL.')
 
-    st.sidebar.number_input('Single Dummy Sample Count',value=sd_productions_default,key='single_dummy_sample_count',min_value=1,max_value=1000,step=1,help='Number of random deals to generate for calculating single dummy probabilities. Larger number (10 to 30) is more accurate but slower. Use 1 to 5 for fast, less accurate results.')
+    st.sidebar.number_input('Single Dummy Sample Count',value=single_dummy_sample_count_default,key='create_sidebar_single_dummy_sample_count',on_change=sample_count_on_change,min_value=1,max_value=1000,step=1,help='Number of random deals to generate for calculating single dummy probabilities. Larger number (10 to 30) is more accurate but slower. Use 1 to 5 for fast, less accurate results.')
 
-    show_sql_query = st.sidebar.checkbox('Show SQL Query',value=show_sql_query_default,key='show_sql_query_checkbox',help='Show SQL used to query dataframes.')
+    st.sidebar.checkbox('Show SQL Query',value=show_sql_query_default,key='create_sidebar_show_sql_query_checkbox',on_change=sql_query_on_change,help='Show SQL used to query dataframes.')
+
 
 if __name__ == '__main__':
 
     # Configurations
     app_datetime = datetime.fromtimestamp(pathlib.Path(__file__).stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
     #pbn_filename_default = 'DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'  # local filename
-    sd_productions_default = 2  # number of random deals to generate for calculating single dummy probabilities. Use smaller number for testing.
+    single_dummy_sample_count_default = 2  # number of random deals to generate for calculating single dummy probabilities. Use smaller number for testing.
+    st.session_state.single_dummy_sample_count = single_dummy_sample_count_default
     show_sql_query_default = True
+    st.session_state.show_sql_query = show_sql_query_default
 
-    with st.container():
+    create_sidebar()
 
+    if 'df' not in st.session_state:
         st.title("Calculate PBN Deal Statistics")
         app_info()
         st.info("*Start by clicking the Go button on the left sidebar.*")
-        statistics_container = st.container()
+    else:
+        st.chat_input('Enter a SQL query e.g. SELECT * FROM df', key='main_prompt_chat_input', on_submit=chat_input_on_submit)
 
-    create_sidebar()
-    
