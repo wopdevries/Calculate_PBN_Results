@@ -35,12 +35,12 @@ def create_df_from_pbn(boards):
     return df
 
 
-def calculate_DDTricks_pars_scores(df, progress=None):
+def calculate_ddtricks_par_scores(df, progress=None):
 
     NSEW_direction_order = [0, 2, 1, 3]
     SHDCN_suit_order = [3, 2, 1, 0, 4]
     # Calculate double dummy and par
-    deals = df['deal'] # using deal object here
+    deals = df['deal'] # using original deal object
     batch_size = 40
     t_t = []
     tables = []
@@ -176,7 +176,7 @@ def calculate_single_dummy_probabilities(deal, produce=100):
 # takes 1000 seconds for 100 sd calcs, or 10 sd calcs per second.
 def calculate_sd_probs(df, sd_productions=100, progress=None):
     sd_cache_d = {}
-    deals = list(map(str,df['deal'])) # using str of deal here
+    deals = list(map(str,df['deal'])) # using original deal object so must convert to string
     for i,deal in enumerate(deals):
         if progress:
             percent_complete = int(i*100/len(deals))
@@ -228,7 +228,7 @@ def calculate_scores():
 def calculate_sd_expected_values(df,sd_cache_d,scores_d):
     # create dict of expected values (probability * score)
     exp_d = defaultdict(list)
-    deal_vul = zip(map(str,df['deal']),df['_vul']) # using str of deal here
+    deal_vul = zip(map(str,df['deal']),df['_vul']) # using original deal object so must convert to string
     for deal,vul in deal_vul:
         #st.write(deal,vul)
         for (pair_direction,declarer_direction,suit),probs in sd_cache_d[deal].items():
@@ -263,7 +263,7 @@ def calculate_best_contracts(sd_exp_df):
 
 
 def convert_contract_to_contract(df):
-    return df['_contract'].str.to_uppercase().str.replace('♠','S').str.replace('♥','H').str.replace('♦','D').str.replace('♣','C').str.replace('NT','N')
+    return df['Contract'].str.to_uppercase().str.replace('♠','S').str.replace('♥','H').str.replace('♦','D').str.replace('♣','C').str.replace('NT','N')
 
 
 # None is used instead of pl.Null because pl.Null becomes 'Null' string in pl.String columns. Not sure what's going on but the solution is to use None.
@@ -461,15 +461,22 @@ def LoadPage():
     # Other dataframe components don't do implicit str conversion like pl.DataFrame. Must manually convert object columns to strings.
     str_df = df.clone()
     str_df = str_df.with_columns(
-        pl.Series('deal',map(str,str_df['deal']),pl.String),
-        pl.Series('auction',map(lambda x: ', '.join(map(str,x[:3]))+' ...',str_df['auction']),pl.String),
-        pl.Series('play',map(lambda x: ', '.join(map(str,x[:3]))+' ...',str_df['play']),pl.String),
-        pl.Series('_contract',map(str,str_df['_contract']),pl.String),
+        pl.Series('Deal',map(str,str_df['deal']),pl.String),
+        pl.Series('Dealer',map(lambda x: 'NESW'[x],str_df['_dealer']),pl.String),
+        pl.Series('Vul',map(lambda x: ['None','NS','EW','Both'][x],str_df['_vul']),pl.String),
+        pl.Series('Auction',map(lambda x: ', '.join(map(str,x[:3]))+' ...',str_df['auction']),pl.String),
+        pl.Series('Play',map(lambda x: ', '.join(map(str,x[:3]))+' ...',str_df['play']),pl.String),
+        pl.Series('Contract',map(str,str_df['_contract']),pl.String),
     )
+    str_df = str_df.rename({'board_num':'BoardNum','claimed':'Claimed'})
+    str_df = str_df.select(pl.exclude(['deal','_dealer','_vul','auction','play','_contract']))
+    column_order = ['Date','Scoring','BoardNum','Room','Deal','North','East','South','West','Dealer','Vul','Auction','Contract','Play','Score','Claimed','Event','Site','BCFlags']
+    assert set(column_order).symmetric_difference(str_df.columns) == set(), f"column_order:{column_order} str_df.columns:{str_df.columns}"
+    str_df = str_df.select(pl.col(column_order))
     ShowDataFrameTable(str_df, key='LoadPage_pbn_df')
 
     DDTricks_progress = st.progress(0,"Calculating Double Dummy Tricks")
-    DDTricks_df, par_df, dd_score_df = calculate_DDTricks_pars_scores(df, progress=DDTricks_progress)
+    DDTricks_df, par_df, dd_score_df = calculate_ddtricks_par_scores(df, progress=DDTricks_progress)
     st.caption("Double Dummy Tricks Dataframe")
     ShowDataFrameTable(DDTricks_df, key='DDTricks_df')
     st.caption("Par Scores Dataframe")
