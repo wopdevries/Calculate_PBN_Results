@@ -8,13 +8,14 @@ import fsspec
 import pandas as pd # only used for __version__ for now. might need for plotting later as pandas plotting support is better than polars.
 import polars as pl
 import duckdb
+import pickle
 from collections import defaultdict
 from datetime import datetime, timezone
 import sys
 
 import endplay # for __version__
 from endplay.parsers import pbn
-from endplay.types import Deal, Contract, Denom, Player, Penalty
+from endplay.types import Deal, Contract, Denom, Player, Penalty, Vul
 from endplay.dds import par, calc_all_tables
 from endplay.dealer import generate_deals
 
@@ -23,15 +24,19 @@ import streamlitlib
 
 
 def create_df_from_pbn(boards):
-    # Create dataframe from boards
-    df = pl.DataFrame([vars(b) for b in boards],orient='row')
-    for col in df.columns:
-        #st.write(f"dtype:{df[col].dtype} Column:{col} Height:{df.height} Type:{df[col].dtype}")
-        if df.height:
-            if isinstance(df[col].dtype, pl.Struct):
-                if isinstance(df[col][0], dict):
-                    #st.write(f"Struct Column:{col} Dict:{df[col][0]}")
-                    df = df.unnest(col) # unnest contents of dict into columns for each key:value pair
+    # this may look weird but there's all sorts of opportunities to error otherwise. polars was giving rust errors when creating a DataFrame from a list of objects.
+    cols_d = {k:[getattr(b,k) for b in boards] for k in vars(boards[0])} # create dict with keys of column names and values are rows
+    simple_data_type_cols = ['board_num', '_dealer', '_vul', 'claimed']
+    simples = pl.DataFrame([cols_d[col] for col in simple_data_type_cols],schema=simple_data_type_cols)
+    infos = pl.DataFrame(cols_d['info']) # automatically expands dict keys to columns
+    contracts = pl.DataFrame(cols_d['_contract'],schema=['_contract']) # 
+    plays = pl.DataFrame(map(str,cols_d['play']),schema=['play'])
+    # plays = pl.DataFrame(cols_d['play'],schema=['play']) # polars.exceptions.ShapeError: data does not match the number of columns
+    # [PenaltyBid(penalty=<Penalty.passed: 1>, alertable=False, announcement=None), ContractBid(denom=<Denom.clubs: 3>, level=1, alertable=False, announcement=None), PenaltyBid(penalty=<Penalty.doubled: 2>, alertable=False, announcement=None), ContractBid(denom=<Denom.spades: 0>, level=1, alertable=False, announcement=None)]
+    auctions = pl.DataFrame(map(str,cols_d['auction']),schema=['auction'])
+    # auctions = pl.DataFrame(cols_d['auction'],schema=['auction']) # polars.exceptions.ShapeError: data does not match the number of columns
+    deals = pl.DataFrame(cols_d['deal'],schema=['deal'])
+    df = pl.concat([simples,infos,contracts,plays,auctions,deals],how='horizontal')
     return df
 
 
@@ -66,8 +71,8 @@ def calculate_ddtricks_par_scores(df, progress=None):
     #         st.write(tt)
     #         st.write(tuple(tuple(sd[suit][direction] for suit in SHDCN_suit_order) for direction in NSEW_direction_order))
 
-    # Create dataframe of par scores (double dummy)
-    pars = [par(tt, b, 0) for tt, b in zip(tables, df['board_num'])]  # middle arg is board (if int) otherwise enum vul.
+    # Create dataframe of par scores using double dummy
+    pars = [par(tt, Vul.find(v), 0) for tt, v in zip(tables, df['Vul'])]  # middle arg is board number (if int) otherwise enum vul. Must use Vul.find(v) because uncorrelated to board number.
     par_scores_ns = [parlist.score for parlist in pars]
     par_scores_ew = [-score for score in par_scores_ns]
     par_contracts = [', '.join([str(contract.level) + 'SHDCN'[int(contract.denom)] + contract.declarer.abbr + contract.penalty.abbr + ('' if contract.result == 0 else '+'+str(contract.result) if contract.result > 0 else str(contract.result)) for contract in parlist]) for parlist in pars]
@@ -169,14 +174,14 @@ def calculate_single_dummy_probabilities(deal, produce=100):
 # def append_single_dummy_results(pbns,sd_cache_d,produce=100):
 #     for pbn in pbns:
 #         if pbn not in sd_cache_d:
-#             sd_cache_d[pbn] = calculate_single_dummy_probabilities(pbn, produce) # all combinations of declarer pair direction, declarer direciton, suit, tricks taken
+#             sd_cache_d[pbn] = calculate_single_dummy_probabilities(pbn, produce) # all combinations of declarer pair directI. ion, declarer direciton, suit, tricks taken
 #     return sd_cache_d
 
 
 # takes 1000 seconds for 100 sd calcs, or 10 sd calcs per second.
 def calculate_sd_probs(df, sd_productions=100, progress=None):
     sd_cache_d = {}
-    deals = list(map(str,df['deal'])) # using original deal object so must convert to string
+    deals = df['Deal']
     for i,deal in enumerate(deals):
         if progress:
             percent_complete = int(i*100/len(deals))
@@ -228,15 +233,15 @@ def calculate_scores():
 def calculate_sd_expected_values(df,sd_cache_d,scores_d):
     # create dict of expected values (probability * score)
     exp_d = defaultdict(list)
-    deal_vul = zip(map(str,df['deal']),df['_vul']) # using original deal object so must convert to string
+    deal_vul = zip(df['Deal'],df['Vul'])
     for deal,vul in deal_vul:
         #st.write(deal,vul)
         for (pair_direction,declarer_direction,suit),probs in sd_cache_d[deal].items():
-            is_vul = vul == 1 or (declarer_direction in 'NS' and vul == 2) or (declarer_direction in 'EW' and vul == 3)
-            #st.write(pair_direction,declarer_direction,suit,probs,is_vul)
+            is_declarer_vul = vul == 'Both' or (vul != 'None' and declarer_direction in vul)
+            #st.write(pair_direction,declarer_direction,suit,probs,is_declarer_vul)
             for level in range(1,8):
-                #st.write(scores_d['_'.join(['Score',str(level)+suit])][is_vul])
-                exp_d['_'.join(['Exp',pair_direction,declarer_direction,suit,str(level)])].append(sum([prob*score[is_vul] for prob,score in zip(probs,scores_d['_'.join(['Score',str(level)+suit])])]))
+                #st.write(scores_d['_'.join(['Score',str(level)+suit])][is_declarer_vul])
+                exp_d['_'.join(['Exp',pair_direction,declarer_direction,suit,str(level)])].append(sum([prob*score[is_declarer_vul] for prob,score in zip(probs,scores_d['_'.join(['Score',str(level)+suit])])]))
             #st.write(exp_d)
     #st.write(exp_d)
     sd_exp_df = pl.DataFrame(exp_d,orient='row')
@@ -326,64 +331,68 @@ def create_augmented_df(df):
         pl.Series('DDTricks_Diff',(df['Tricks'].cast(pl.Int8)-df['DDTricks'].cast(pl.Int8)),pl.Int8,strict=False), # can have nulls or Int8
         pl.Series('ExpMaxScore_Diff_NS',(df['Score_NS']-df['ExpMaxScore_NS']),pl.Float32),
     )
+    df = df.with_columns(
+        pl.Series('ParScore_Diff_EW',-df['ParScore_Diff_NS'],pl.Int16), # used for open-closed room comparisons
+        pl.Series('ExpMaxScore_Diff_EW',-df['ExpMaxScore_Diff_NS'],pl.Float32), # used for open-closed room comparisons
+    )
     return df
 
 
 def display_experiments(df):
 
-    st.info("Following cells contain WIP experiments with comparative statistics; NS vs EW, Open vs Closed rooms, Tricks vs DD, par diffs, expected max value diffs.")
+    if 'Room' in df.columns and df['Room'].n_unique() == 2 and 'Open' in df['Room'].unique() and 'Closed' in df['Room'].unique():
+        st.info("Following are WIP experiments showing comparative statistics for Open-Closed room competions. Comparisons include NS vs EW, tricks taken vs DD, par diffs, expected max value diffs.")
 
-    for d in ['NS','EW']:
-        g = df.group_by([d[0],d[1],'Room'])
-        for k,v in g:
-            st.caption(f"Summarize {k[2]} {d} ({k[0]}-{k[1]}) ParScore_Diff_{d}")
-            sql_query = f"SUMMARIZE SELECT ParScore_Diff_{d}, DDTricks_Diff, ExpMaxScore_Diff_{d} FROM df WHERE Room='{k[2]}'" # DDTicks is directionally invariant
-            ShowDataFrameTable(df, query=sql_query, key=f"display_experiments_{d+'_'.join(k)}_summarize")
+        for d in ['NS','EW']:
+            g = df.group_by([d[0],d[1],'Room'])
+            for k,v in g:
+                st.caption(f"Summarize {k[2]} {d} ({k[0]}-{k[1]}) ParScore_Diff_{d}")
+                sql_query = f"SUMMARIZE SELECT ParScore_Diff_{d}, DDTricks_Diff, ExpMaxScore_Diff_{d} FROM df WHERE Room='{k[2]}'" # DDTicks is directionally invariant
+                ShowDataFrameTable(df, query=sql_query, key=f"display_experiments_{d+'_'.join(k)}_summarize")
 
-        return
-        # sum over Par_Diff_NS for all, bencam22, wbridge5
+        # # sum over Par_Diff_NS for all, bencam22, wbridge5
 
-        # todo: change f' to f" for all f strings
-        all, ns, ew = df[f'Par_Diff_{d}'].sum(),df[df['N'].eq('BENCAM22')]['Par_Diff_NS'].sum(),df[df['N'].eq('WBridge5')]['Par_Diff_NS'].sum()
-        st.write(f"Sum of Par_Diff_NS: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        # # todo: change f' to f" for all f strings
+        # all, ns, ew = df[f'Par_Diff_{d}'].sum(),df[df['N'].eq('BENCAM22')]['Par_Diff_NS'].sum(),df[df['N'].eq('WBridge5')]['Par_Diff_NS'].sum()
+        # st.write(f"Sum of Par_Diff_NS: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
 
-        # frequency where par was exceeded for all, bencam22, wbridge5
-        all, bencam22, wbridge5 = sum(df[f'Par_Diff_{d}'].gt(0)),sum(df['N'].eq('BENCAM22')&df['Par_Diff_NS'].gt(0)),sum(df['N'].eq('WBridge5')&df['Par_Diff_NS'].gt(0))
-        st.write(f"Frequency where exceeding Par: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        # # frequency where par was exceeded for all, bencam22, wbridge5
+        # all, bencam22, wbridge5 = sum(df[f'Par_Diff_{d}'].gt(0)),sum(df['N'].eq('BENCAM22')&df['Par_Diff_NS'].gt(0)),sum(df['N'].eq('WBridge5')&df['Par_Diff_NS'].gt(0))
+        # st.write(f"Frequency where exceeding Par: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
 
-        # describe() over DDTricks_Diff for all, bencam22, wbridge5
-        st.write('Describe Declarer, BENCAM22, DDTricks_Diff:')
-        st.write(df[df['DeclarerName'].eq('BENCAM22')]['DDTricks_Diff'].describe())
-        st.write('Describe Declarer, WBridge5, DDTricks_Diff:')
-        st.write(df[df['DeclarerName'].eq('WBridge5')]['DDTricks_Diff'].describe())
+        # # describe() over DDTricks_Diff for all, bencam22, wbridge5
+        # st.write('Describe Declarer, BENCAM22, DDTricks_Diff:')
+        # st.write(df[df['DeclarerName'].eq('BENCAM22')]['DDTricks_Diff'].describe())
+        # st.write('Describe Declarer, WBridge5, DDTricks_Diff:')
+        # st.write(df[df['DeclarerName'].eq('WBridge5')]['DDTricks_Diff'].describe())
 
-        # sum over DDTricks_Diff for all, bencam22, wbridge5
-        all, bencam22, wbridge5 = df['DDTricks_Diff'].sum(),df[df['DeclarerName'].eq('BENCAM22')]['DDTricks_Diff'].sum(),df[df['DeclarerName'].eq('WBridge5')]['DDTricks_Diff'].sum()
-        st.write(f"Sum of DDTricks_Diff: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        # # sum over DDTricks_Diff for all, bencam22, wbridge5
+        # all, bencam22, wbridge5 = df['DDTricks_Diff'].sum(),df[df['DeclarerName'].eq('BENCAM22')]['DDTricks_Diff'].sum(),df[df['DeclarerName'].eq('WBridge5')]['DDTricks_Diff'].sum()
+        # st.write(f"Sum of DDTricks_Diff: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
 
-        # frequency where Tricks > DD for all, bencam22, wbridge5
-        all, bencam22, wbridge5 = sum(df['DDTricks_Diff'].notna() & df['DDTricks_Diff'].gt(0)),sum(df[df['DeclarerName'].eq('BENCAM22')]['DDTricks_Diff'].gt(0)),sum(df[df['DeclarerName'].eq('WBridge5')]['DDTricks_Diff'].gt(0))
-        st.write(f"Frequency where Tricks > DD: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        # # frequency where Tricks > DD for all, bencam22, wbridge5
+        # all, bencam22, wbridge5 = sum(df['DDTricks_Diff'].notna() & df['DDTricks_Diff'].gt(0)),sum(df[df['DeclarerName'].eq('BENCAM22')]['DDTricks_Diff'].gt(0)),sum(df[df['DeclarerName'].eq('WBridge5')]['DDTricks_Diff'].gt(0))
+        # st.write(f"Frequency where Tricks > DD: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
 
-        # frequency where Tricks < DD for all, bencam22, wbridge5
-        all, bencam22, wbridge5 = sum(df['DDTricks_Diff'].notna() & df['DDTricks_Diff'].lt(0)),sum(df[df['DeclarerName'].eq('BENCAM22')]['DDTricks_Diff'].lt(0)),sum(df[df['DeclarerName'].eq('WBridge5')]['DDTricks_Diff'].lt(0))
-        st.write(f"Frequency where Tricks < DD: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        # # frequency where Tricks < DD for all, bencam22, wbridge5
+        # all, bencam22, wbridge5 = sum(df['DDTricks_Diff'].notna() & df['DDTricks_Diff'].lt(0)),sum(df[df['DeclarerName'].eq('BENCAM22')]['DDTricks_Diff'].lt(0)),sum(df[df['DeclarerName'].eq('WBridge5')]['DDTricks_Diff'].lt(0))
+        # st.write(f"Frequency where Tricks < DD: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
 
-        # describe() over Par_Diff_NS for all, open, closed
-        st.write(df['Par_Diff_NS'].describe(),df[df['Room'].eq('Open')]['Par_Diff_NS'].describe(),df[df['Room'].eq('Closed')]['Par_Diff_NS'].describe())
-        # sum over Par_Diff_NS for all, bencam22, wbridge5
-        all, bencam22, wbridge5 = df['Par_Diff_NS'].sum(),df[df['Room'].eq('Open')]['Par_Diff_NS'].sum(),df[df['Room'].eq('Closed')]['Par_Diff_NS'].sum()
-        st.write(f"Sum of Par_Diff_NS: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
-        all, open, closed = sum(df['Par_Diff_NS'].gt(0)),sum(df['Room'].eq('Open')&df['Par_Diff_NS'].gt(0)),sum(df['Room'].eq('Closed')&df['Par_Diff_NS'].gt(0))
-        st.write(f"Frequency where exceeding Par: All:{all} Open:{open} Closed:{closed} Open-Closed:{open-closed}")
+        # # describe() over Par_Diff_NS for all, open, closed
+        # st.write(df['Par_Diff_NS'].describe(),df[df['Room'].eq('Open')]['Par_Diff_NS'].describe(),df[df['Room'].eq('Closed')]['Par_Diff_NS'].describe())
+        # # sum over Par_Diff_NS for all, bencam22, wbridge5
+        # all, bencam22, wbridge5 = df['Par_Diff_NS'].sum(),df[df['Room'].eq('Open')]['Par_Diff_NS'].sum(),df[df['Room'].eq('Closed')]['Par_Diff_NS'].sum()
+        # st.write(f"Sum of Par_Diff_NS: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        # all, open, closed = sum(df['Par_Diff_NS'].gt(0)),sum(df['Room'].eq('Open')&df['Par_Diff_NS'].gt(0)),sum(df['Room'].eq('Closed')&df['Par_Diff_NS'].gt(0))
+        # st.write(f"Frequency where exceeding Par: All:{all} Open:{open} Closed:{closed} Open-Closed:{open-closed}")
 
-        # describe() over ExpMaxScore_Diff_NS for all, open, closed
-        st.write(df['ExpMaxScore_Diff_NS'].describe(),df[df['Room'].eq('Open')]['ExpMaxScore_Diff_NS'].describe(),df[df['Room'].eq('Closed')]['ExpMaxScore_Diff_NS'].describe())
-        # sum over ExpMaxScore_Diff_NS for all, bencam22, wbridge5
-        all, bencam22, wbridge5 = df['ExpMaxScore_Diff_NS'].sum(),df[df['Room'].eq('Open')]['ExpMaxScore_Diff_NS'].sum(),df[df['Room'].eq('Closed')]['ExpMaxScore_Diff_NS'].sum()
-        st.write(f"Sum of ExpMaxScore_Diff_NS: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
-        all, open, closed = sum(df['ExpMaxScore_Diff_NS'].gt(0)),sum(df['Room'].eq('Open')&df['ExpMaxScore_Diff_NS'].gt(0)),sum(df['Room'].eq('Closed')&df['ExpMaxScore_Diff_NS'].gt(0))
-        st.write(f"Frequency where exceeding ExpMaxScore_Diff_NS: All:{all} Open:{open} Closed:{closed} Open-Closed:{open-closed}")
+        # # describe() over ExpMaxScore_Diff_NS for all, open, closed
+        # st.write(df['ExpMaxScore_Diff_NS'].describe(),df[df['Room'].eq('Open')]['ExpMaxScore_Diff_NS'].describe(),df[df['Room'].eq('Closed')]['ExpMaxScore_Diff_NS'].describe())
+        # # sum over ExpMaxScore_Diff_NS for all, bencam22, wbridge5
+        # all, bencam22, wbridge5 = df['ExpMaxScore_Diff_NS'].sum(),df[df['Room'].eq('Open')]['ExpMaxScore_Diff_NS'].sum(),df[df['Room'].eq('Closed')]['ExpMaxScore_Diff_NS'].sum()
+        # st.write(f"Sum of ExpMaxScore_Diff_NS: All:{all} BENCAM22:{bencam22} WBridge5:{wbridge5} BENCAM22-WBridge5:{bencam22-wbridge5}")
+        # all, open, closed = sum(df['ExpMaxScore_Diff_NS'].gt(0)),sum(df['Room'].eq('Open')&df['ExpMaxScore_Diff_NS'].gt(0)),sum(df['Room'].eq('Closed')&df['ExpMaxScore_Diff_NS'].gt(0))
+        # st.write(f"Frequency where exceeding ExpMaxScore_Diff_NS: All:{all} Open:{open} Closed:{closed} Open-Closed:{open-closed}")
 
 
 def ShowDataFrameTable(df, key, query='SELECT * FROM df'):
@@ -441,76 +450,148 @@ def LoadPage():
     #with st.session_state.chat_container:
 
     url = st.session_state.create_sidebar_text_input_url
-    st.caption(f"Loading {url}") # using protocol:{get_url_protocol(url)}")
+    st.caption(f"Selected PBN file: {url}") # using protocol:{get_url_protocol(url)}")
 
     if url is None or url == '' or (get_url_protocol(url) == 'file' and ('/' in url and '\\' in url and '&' in url)):
         return
 
-    with st.spinner("Loading in progress ..."):
-        of = fsspec.open(url, mode='r', encoding='utf-8')
-        with of as f:
-            pbn_data = f.read()
+    path_url = pathlib.Path(url)
+    boards = None
+    df = None
+    everything_df = None
+    if url.endswith('_boards.pkl'):
+        if not path_url.exists():
+            st.warning(f"{url} does not exist.")
+            return
+        with st.spinner(f"Loading {url} ..."):
+            with open(path_url, 'rb') as f:
+                boards = pickle.load(f)
+        url = url.replace('_boards.pkl','')
+        path_url = pathlib.Path(url)
+    elif url.endswith('_df.pkl'):
+        if not path_url.exists():
+            st.warning(f"{url} does not exist.")
+            return
+        with st.spinner(f"Loading {url} ..."):
+            with open(path_url, 'rb') as f:
+                df = pickle.load(f)
+        url = url.replace('_df.pkl','')
+        path_url = pathlib.Path(url)
+    elif url.endswith('_everythingdf.parquet'):
+        if not path_url.exists():
+            st.warning(f"{url} does not exist.")
+            return
+        with st.spinner(f"Loading {url} ..."):
+            everything_df = pl.read_parquet(path_url)
+        url = url.replace('_everythingdf.parquet','')
+        path_url = pathlib.Path(url)
+    else:
+        with st.spinner(f"Loading {url} ..."):
+            of = fsspec.open(url, mode='r', encoding='utf-8')
+            with of as f:
+                pbn_data = f.read()
 
-    boards = pbn.loads(pbn_data)
+        if boards is None and df is None:
+            with st.spinner("Parsing PBN file ..."):
+                boards = pbn.loads(pbn_data)
+                if len(boards) == 0:
+                    st.warning(f"{url} has no boards.")
+                    return
+                if len(boards) > recommended_board_max:
+                    st.warning(f"{url} has {len(boards)} boards. More than {recommended_board_max} boards may result in instability.")
+        if save_files:
+            boards_url = pathlib.Path(path_url.stem+'_boards').with_suffix('.pkl')
+            boards_path = pathlib.Path(boards_url)
+            with st.spinner(f"Saving {boards_url} file ..."):
+                with open(boards_path, 'wb') as f:
+                    pickle.dump(boards, f)
+                st.caption(f"Saved {boards_url}. File length is {boards_path.stat().st_size} bytes.")
 
-    #st.write(f"Number of boards: {len(boards)}")
-    #st.write(vars(boards[0]))
+    if everything_df is None:
+        if df is None:
+            with st.spinner("Creating PBN Dataframe ..."):
+                #st.write(f"Number of boards: {len(boards)}")
+                #st.write(vars(boards[0]))
+                df = create_df_from_pbn(boards)
+            with st.spinner("Cleaning and Augmenting PBN Dataframe ..."):
+                # Other dataframe components don't do implicit str conversion like pl.DataFrame. Must manually convert object columns to strings.
+                df = df.with_columns(
+                    pl.Series('Deal',map(str,df['deal']),pl.String),
+                    pl.Series('Dealer',map(lambda x: 'NESW'[x],df['_dealer']),pl.String),
+                    pl.Series('Vul',map(lambda x: ['None','NS','EW','Both'][x],df['_vul']),pl.String),
+                    pl.Series('Auction',map(lambda x: ', '.join(map(str,x[:3]))+' ...',df['auction']),pl.String),
+                    pl.Series('Play',map(lambda x: ', '.join(map(str,x[:3]))+' ...',df['play']),pl.String),
+                    pl.Series('Contract',map(str,df['_contract']),pl.String),
+                )
+                df = df.rename({'board_num':'Board','claimed':'Claimed'})
+                # todo: have to exclude auction: ArrowInvalid: Could not convert PenaltyBid(penalty=<Penalty.passed: 1>, alertable=False, announcement=None) with type PenaltyBid: did not recognize Python value type when inferring an Arrow data type
+                # if save_files:
+                #     # save df as pickle because it contains object columns. later, they're dropped when creating pbn_df.
+                #     df_url = pathlib.Path(path_url.stem+'_df').with_suffix('.pkl')
+                #     df_path = pathlib.Path(df_url)
+                #     with st.spinner(f"Saving {df_url} file ..."):
+                #         with open(df_path, 'wb') as f:
+                #             exclude_columns = ['deal','_dealer','_vul','auction','play','_contract'] # todo: fix this. shouldn't have to exclude. object issue.
+                #             pickle.dump(df.select(pl.exclude(exclude_columns)), f)
+                #     st.caption(f"Saved {df_url}. File length is {df_path.stat().st_size} bytes.")
+        exclude_columns = ['deal','_dealer','_vul','auction','play','_contract']
+        column_order = ['Date','Scoring','Board','Room','Deal','North','East','South','West','Dealer','Vul','Auction','Contract','Play','Score','Claimed','Event','Site','BCFlags']
+        column_order = [c for c in column_order if c in df.columns]
+        # add any not-well-known columns but prepend with underscore to avoid conflicts
+        for c in df.columns:
+            if c not in column_order:
+                if c not in exclude_columns:
+                    custom_c = 'Custom_'+c
+                    df = df.rename({c:custom_c})
+                    column_order.append(custom_c)
+        pbn_df = df.select(pl.col(column_order))
+    
+        st.caption("PBN Dataframe")
+        ShowDataFrameTable(pbn_df, key='LoadPage_pbn_df')
 
-    df = create_df_from_pbn(boards)
-    st.caption("PBN Dataframe")
-    # Other dataframe components don't do implicit str conversion like pl.DataFrame. Must manually convert object columns to strings.
-    str_df = df.clone()
-    str_df = str_df.with_columns(
-        pl.Series('Deal',map(str,str_df['deal']),pl.String),
-        pl.Series('Dealer',map(lambda x: 'NESW'[x],str_df['_dealer']),pl.String),
-        pl.Series('Vul',map(lambda x: ['None','NS','EW','Both'][x],str_df['_vul']),pl.String),
-        pl.Series('Auction',map(lambda x: ', '.join(map(str,x[:3]))+' ...',str_df['auction']),pl.String),
-        pl.Series('Play',map(lambda x: ', '.join(map(str,x[:3]))+' ...',str_df['play']),pl.String),
-        pl.Series('Contract',map(str,str_df['_contract']),pl.String),
-    )
-    str_df = str_df.rename({'board_num':'BoardNum','claimed':'Claimed'})
-    str_df = str_df.select(pl.exclude(['deal','_dealer','_vul','auction','play','_contract']))
-    column_order = ['Date','Scoring','BoardNum','Room','Deal','North','East','South','West','Dealer','Vul','Auction','Contract','Play','Score','Claimed','Event','Site','BCFlags']
-    assert set(column_order).symmetric_difference(str_df.columns) == set(), f"column_order:{column_order} str_df.columns:{str_df.columns}"
-    str_df = str_df.select(pl.col(column_order))
-    ShowDataFrameTable(str_df, key='LoadPage_pbn_df')
+        DDTricks_progress = st.progress(0,"Calculating Double Dummy Tricks")
+        DDTricks_df, par_df, dd_score_df = calculate_ddtricks_par_scores(df, progress=DDTricks_progress)
+        st.caption("Double Dummy Tricks Dataframe")
+        ShowDataFrameTable(DDTricks_df, key='LoadPage_DDTricks_df')
+        st.caption("Par Scores Dataframe")
+        ShowDataFrameTable(par_df, key='LoadPage_par_df')
+        st.caption("Double Dummy Scores Dataframe")
+        ShowDataFrameTable(dd_score_df, key='LoadPage_dd_score_df')
 
-    DDTricks_progress = st.progress(0,"Calculating Double Dummy Tricks")
-    DDTricks_df, par_df, dd_score_df = calculate_ddtricks_par_scores(df, progress=DDTricks_progress)
-    st.caption("Double Dummy Tricks Dataframe")
-    ShowDataFrameTable(DDTricks_df, key='DDTricks_df')
-    st.caption("Par Scores Dataframe")
-    ShowDataFrameTable(par_df, key='par_df')
-    st.caption("Double Dummy Scores Dataframe")
-    ShowDataFrameTable(dd_score_df, key='dd_score_df')
+        everything_df = pl.concat([pbn_df,DDTricks_df,par_df,dd_score_df],how='horizontal')
+        if st.session_state.single_dummy_sample_count:
+            st.session_state.single_dummy_sample_count = single_dummy_sample_count_default
+            sd_prob_progress = st.progress(0,f"Calculating Single Dummy Probabilities from {st.session_state.single_dummy_sample_count} Samples")
+            sd_cache_d, sd_probs_df = calculate_sd_probs(df, st.session_state.single_dummy_sample_count, progress=sd_prob_progress)
+            st.caption(f"Single Dummy Probabilities Dataframe Using {st.session_state.single_dummy_sample_count} Samples")
+            ShowDataFrameTable(sd_probs_df, key='LoadPage_sd_probs_df')
 
-    sd_prob_progress = st.progress(0,f"Calculating Single Dummy Probabilities from {st.session_state.single_dummy_sample_count} Samples")
-    sd_cache_d, sd_probs_df = calculate_sd_probs(df, st.session_state.single_dummy_sample_count, progress=sd_prob_progress)
-    st.caption(f"Single Dummy Probabilities Dataframe Using {st.session_state.single_dummy_sample_count} Samples")
-    ShowDataFrameTable(sd_probs_df, key='sd_probs_df')
+            scores_d, scores_df = calculate_scores()
+            st.caption("Scores Dataframe (not vul, vul)")
+            ShowDataFrameTable(scores_df, key='LoadPage_scores_df')
 
-    scores_d, scores_df = calculate_scores()
-    st.caption("Scores Dataframe (not vul, vul)")
-    ShowDataFrameTable(scores_df, key='scores_df')
+            sd_expected_values_df = calculate_sd_expected_values(df, sd_cache_d, scores_d)
+            st.caption("Single Dummy Expected Values Dataframe")
+            ShowDataFrameTable(sd_expected_values_df, key='LoadPage_sd_expected_values_df')
 
-    sd_expected_values_df = calculate_sd_expected_values(df, sd_cache_d, scores_d)
-    st.caption("Single Dummy Expected Values Dataframe")
-    ShowDataFrameTable(sd_expected_values_df, key='sd_expected_values_df')
+            sd_best_contract_df = calculate_best_contracts(sd_expected_values_df)
+            st.caption("Single Dummy Best Contracts Dataframe")
+            ShowDataFrameTable(sd_best_contract_df, key='LoadPage_sd_best_contract_df')
+            everything_df = pl.concat([everything_df,sd_probs_df,scores_df,sd_expected_values_df,sd_best_contract_df],how='horizontal')
+            everything_df = create_augmented_df(everything_df)
+        if save_files:
+            everythingdf_url = pathlib.Path(path_url.stem+'_everythingdf').with_suffix('.parquet')
+            everythingdf_path = pathlib.Path(everythingdf_url)
+            with st.spinner(f"Saving {everythingdf_url} file ..."):
+                everything_df.write_parquet(everythingdf_path)
+            st.caption(f"Saved {everythingdf_url}. File length is {everythingdf_path.stat().st_size} bytes.")
 
-    sd_best_contract_df = calculate_best_contracts(sd_expected_values_df)
-    st.caption("Single Dummy Best Contracts Dataframe")
-    ShowDataFrameTable(sd_best_contract_df, key='sd_best_contract_df')
-
-    merged_df = pl.concat([str_df,DDTricks_df,par_df,dd_score_df,sd_probs_df,scores_df,sd_expected_values_df,sd_best_contract_df],how='horizontal')
-    #st.caption("Merged Dataframe")
-    #ShowDataFrameTable(merged_df, key='merged_df')
-    augmented_df = create_augmented_df(merged_df)
     st.caption("Everything Dataframe")
-    ShowDataFrameTable(augmented_df, key='augmented_df')
+    ShowDataFrameTable(everything_df, key='LoadPage_everything_df')
 
-    display_experiments(augmented_df)
+    display_experiments(everything_df)
 
-    st.session_state.df = augmented_df
+    st.session_state.df = everything_df
 
     st.caption("All dataframes have been calculated and displayed.")
     st.caption("You may now enter SQL queries in the chat box below. Use *FROM df* to query the everything dataframe.")
@@ -524,12 +605,14 @@ def create_sidebar():
     #default_url = 'file://c:/sw/bridge/ML-Contract-Bridge/src/Calculate_PBN_Results/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
     #default_url = r'file://c:\sw/bridge\ML-Contract-Bridge\src\Calculate_PBN_Results/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
     #default_url = r'file://DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
-    default_url = 'https://raw.githubusercontent.com/BSalita/Calculate_PBN_Results/master/DDS_Camrose24_1-%20BENCAM22%20v%20WBridge5.pbn'
+    default_url = 'https://raw.githubusercontent.com/BSalita/Calculate_PBN_Results/master/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
+    #default_url = 'GIB-Thorvald-8638-2024-08-23.pbn'
     st.sidebar.text_input('Enter PBN URL:', default_url, key='create_sidebar_text_input_url', help='Enter a URL or pathless local file name.') # , on_change=LoadPage
     st.sidebar.button('Go', on_click=LoadPage, key='create_sidebar_go_button', help='Load PBN data from URL.')
 
     st.sidebar.number_input('Single Dummy Sample Count',value=single_dummy_sample_count_default,key='create_sidebar_single_dummy_sample_count',on_change=sample_count_on_change,min_value=1,max_value=1000,step=1,help='Number of random deals to generate for calculating single dummy probabilities. Larger number (10 to 30) is more accurate but slower. Use 1 to 5 for fast, less accurate results.')
 
+    # SELECT Board, Vul, ParContract, ParScore_NS, Custom_ParContract FROM df
     st.sidebar.checkbox('Show SQL Query',value=show_sql_query_default,key='create_sidebar_show_sql_query_checkbox',on_change=sql_query_on_change,help='Show SQL used to query dataframes.')
 
 
@@ -542,6 +625,8 @@ if __name__ == '__main__':
     st.session_state.single_dummy_sample_count = single_dummy_sample_count_default
     show_sql_query_default = True
     st.session_state.show_sql_query = show_sql_query_default
+    save_files = True
+    recommended_board_max = 10000
 
     create_sidebar()
 

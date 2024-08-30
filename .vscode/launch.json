@@ -16,7 +16,7 @@
                     "8501"
                 ],
                 "console": "integratedTerminal",
-                "justMyCode": true
+                "justMyCode": false
             }
         ]
 }
