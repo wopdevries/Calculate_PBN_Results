@@ -625,7 +625,7 @@ if __name__ == '__main__':
     st.session_state.single_dummy_sample_count = single_dummy_sample_count_default
     show_sql_query_default = True
     st.session_state.show_sql_query = show_sql_query_default
-    save_files = True
+    save_files = False
     recommended_board_max = 10000
 
     create_sidebar()
