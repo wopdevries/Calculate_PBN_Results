@@ -29,10 +29,12 @@ def create_df_from_pbn(boards):
     simple_data_type_cols = ['board_num', '_dealer', '_vul', 'claimed']
     simples = pl.DataFrame([cols_d[col] for col in simple_data_type_cols],schema=simple_data_type_cols)
     infos = pl.DataFrame(cols_d['info']) # automatically expands dict keys to columns
-    contracts = pl.DataFrame(cols_d['_contract'],schema=['_contract']) # 
+    contracts = pl.DataFrame(cols_d['_contract'],schema=['_contract'])
+    # todo: play needs __repr__ output
     plays = pl.DataFrame(map(str,cols_d['play']),schema=['play'])
     # plays = pl.DataFrame(cols_d['play'],schema=['play']) # polars.exceptions.ShapeError: data does not match the number of columns
     # [PenaltyBid(penalty=<Penalty.passed: 1>, alertable=False, announcement=None), ContractBid(denom=<Denom.clubs: 3>, level=1, alertable=False, announcement=None), PenaltyBid(penalty=<Penalty.doubled: 2>, alertable=False, announcement=None), ContractBid(denom=<Denom.spades: 0>, level=1, alertable=False, announcement=None)]
+    # todo: auctions needs __repr__ output
     auctions = pl.DataFrame(map(str,cols_d['auction']),schema=['auction'])
     # auctions = pl.DataFrame(cols_d['auction'],schema=['auction']) # polars.exceptions.ShapeError: data does not match the number of columns
     deals = pl.DataFrame(cols_d['deal'],schema=['deal'])
@@ -40,68 +42,57 @@ def create_df_from_pbn(boards):
     return df
 
 
-def calculate_ddtricks_par_scores(df, progress=None):
+#NSEW_endplay_indexes = [0, 2, 1, 3]
+SHDCN_endplay_indexes = [3, 2, 1, 0, 4]
 
-    NSEW_direction_order = [0, 2, 1, 3]
-    SHDCN_suit_order = [3, 2, 1, 0, 4]
-    # Calculate double dummy and par
-    deals = df['deal'] # using original deal object
-    batch_size = 40
-    t_t = []
-    tables = []
-    for b in range(0, len(deals), batch_size):
-        if progress:
-            percent_complete = int(b*100/len(deals))
-            progress.progress(percent_complete,f"{percent_complete}%: {b} of {len(deals)} double dummies calculated.")
-        batch_tables = calc_all_tables(deals[b:min(b + batch_size, len(deals))])
-        tables.extend(batch_tables)
-        batch_t_t = (tt._data.resTable for tt in batch_tables)
-        t_t.extend(batch_t_t)
-    if progress:
-        progress.progress(100,f"100%: {len(deals)} of {len(deals)} double dummies calculated.")
-
-    assert len(deals) == len(t_t) == len(tables)
-
+def display_double_dummy_deals(deals, dd_result_tables, deal_index=0, max_display=4):
     # Display a few hands and double dummy tables
-    # max_display = 4
-    # for ii, (dd, sd, tt) in enumerate(zip(deals, t_t, tables)):
-    #     if ii < max_display:
-    #         st.write(f"Deal: {ii + 1}")
-    #         st.write(dd)
-    #         st.write(tt)
-    #         st.write(tuple(tuple(sd[suit][direction] for suit in SHDCN_suit_order) for direction in NSEW_direction_order))
+    for dd, rt in zip(deals[deal_index:deal_index+max_display], dd_result_tables[deal_index:deal_index+max_display]):
+        deal_index += 1
+        print(f"Deal: {deal_index}")
+        print(dd)
+        rt.pprint()
+
+
+def calculate_ddtricks_par_scores(df, scores_d, progress=None):
+
+    deals = df['deal'] # object version is deal. string version is Deal.
+
+    # Calculate double dummy and par
+    dd_result_tables = calc_double_dummy_deals(deals, progress=progress)
+
+    #display_double_dummy_deals(deals, dd_result_tables, 0, 4)
 
     # Create dataframe of par scores using double dummy
-    pars = [par(tt, Vul.find(v), 0) for tt, v in zip(tables, df['Vul'])]  # middle arg is board number (if int) otherwise enum vul. Must use Vul.find(v) because uncorrelated to board number.
+    pars = [par(rt, Vul.find(v), 0) for rt, v in zip(dd_result_tables, df['Vul'])]  # middle arg is board number (if int) otherwise enum vul. Must use Vul.find(v) because uncorrelated to board number.
     par_scores_ns = [parlist.score for parlist in pars]
     par_scores_ew = [-score for score in par_scores_ns]
     par_contracts = [', '.join([str(contract.level) + 'SHDCN'[int(contract.denom)] + contract.declarer.abbr + contract.penalty.abbr + ('' if contract.result == 0 else '+'+str(contract.result) if contract.result > 0 else str(contract.result)) for contract in parlist]) for parlist in pars]
     par_df = pl.DataFrame({'ParScore_NS': par_scores_ns, 'ParScore_EW': par_scores_ew, 'ParContract': par_contracts},orient='row')
 
     # Create dataframe of double dummy tricks per direction and suit
-    DDTricks_rows = [[sd[suit][direction] for direction in NSEW_direction_order for suit in SHDCN_suit_order] for sd in t_t]
-    DDTricks_df = pl.DataFrame(DDTricks_rows, schema=['_'.join(['DDTricks', d, s]) for d in 'NSEW' for s in 'CDHSN'],orient='row')
+    DDTricks_df = pl.DataFrame([[s for d in t.to_list() for s in d] for t in dd_result_tables],schema={'_'.join(['DDTricks',d,s]):pl.UInt8 for d in 'NESW' for s in 'SHDCN'},orient='row')
 
-    def Tricks_To_Score(sd):
-        return [Contract(level=level, denom=suit, declarer=direction, penalty=Penalty.passed if sd[suit][direction] - 6 - level >= 0 else Penalty.doubled, result=sd[suit][direction] - 6 - level).score(0) for direction in NSEW_direction_order for suit in SHDCN_suit_order for level in range(1, 8)]
-
-    dd_score_rows = [Tricks_To_Score(sd) for sd in t_t]
-    dd_score_df = pl.DataFrame(dd_score_rows, schema=['_'.join(['DDScore', str(l) + s, d]) for d in 'NSEW' for s in 'CDHSN' for l in range(1, 8)],orient='row')
+    dd_score_cols = [[scores_d[(level,suit,tricks,vul == 'Both' or (vul != 'None' and direction in vul))] for tricks,vul in zip(DDTricks_df['_'.join(['DDTricks',direction,suit])],df['Vul'])] for direction in 'NESW' for suit in 'SHDCN' for level in range(1, 8)]
+    dd_score_df = pl.DataFrame(dd_score_cols, schema=['_'.join(['DDScore', str(l) + s, d]) for d in 'NSEW' for s in 'CDHSN' for l in range(1, 8)])
 
     return DDTricks_df, par_df, dd_score_df
 
 
 # todo: could save a couple seconds by creating dict of deals
-def calc_double_dummy_deals(deals, batch_size=40):
-    t_t = []
-    tables = []
+def calc_double_dummy_deals(deals, batch_size=40, progress=None):
+    if isinstance(deals,pl.Series):
+        deals = deals.to_list() # this is needed because polars kept ignoring the [b:b+batch_size] slicing. WTF?
+    all_result_tables = []
     for b in range(0,len(deals),batch_size):
-        batch_tables = calc_all_tables(deals[b:min(b+batch_size,len(deals))])
-        tables.extend(batch_tables)
-        batch_t_t = (tt._data.resTable for tt in batch_tables)
-        t_t.extend(batch_t_t)
-    assert len(t_t) == len(tables)
-    return deals, t_t, tables
+        if progress:
+                percent_complete = int(b*100/len(deals))
+                progress.progress(percent_complete,f"{percent_complete}%: {b} of {len(deals)} double dummies calculated.")
+        result_tables = calc_all_tables(deals[b:b+batch_size])
+        all_result_tables.extend(result_tables)
+    if progress:
+        progress.progress(100,f"100%: {len(deals)} of {len(deals)} double dummies calculated.")
+    return all_result_tables
 
 
 def constraints(deal):
@@ -126,11 +117,12 @@ def generate_single_dummy_deals(predeal_string, produce, env=dict(), max_attempt
 
     deals = tuple(deals_t) # create a tuple before interop memory goes wonky
     
-    return calc_double_dummy_deals(deals)
+    return deals, calc_double_dummy_deals(deals)
 
 
 def calculate_single_dummy_probabilities(deal, produce=100):
 
+    # todo: has this been obsoleted by endplay's calc_all_tables 2nd parameter?
     ns_ew_rows = {}
     for ns_ew in ['NS','EW']:
         s = deal[2:].split()
@@ -141,34 +133,22 @@ def calculate_single_dummy_probabilities(deal, produce=100):
             s[0] = '...'
             s[2] = '...'
         predeal_string = 'N:'+' '.join(s)
-        #print_to_log(f"predeal:{predeal_string}")
+        #print(f"predeal:{predeal_string}")
 
-        d_t, t_t, tables = generate_single_dummy_deals(predeal_string, produce, show_progress=False)
+        sd_deals, sd_dd_result_tables = generate_single_dummy_deals(predeal_string, produce, show_progress=False)
 
-        rows = []
-        max_display = 4 # pprint only the first n generated deals
-        direction_order = [0,2,1,3] # NSEW order
-        suit_order = [3,2,1,0,4] # SHDCN order?
-        for ii,(dd,sd,tt) in enumerate(zip(d_t,t_t,tables)):
-            # if ii < max_display:
-                # print_to_log(f"Deal:{ii+1} Fixed:{ns_ew} Generated:{ii+1}/{produce}")
-                # dd.pprint()
-                # print_to_log()
-                # tt.pprint()
-                # print_to_log()
-            nswe_flat_l = [sd[suit][direction] for direction in direction_order for suit in suit_order]
-            rows.append([dd.to_pbn()]+nswe_flat_l)
+        #display_double_dummy_deals(sd_deals, sd_dd_result_tables, 0, 4)
+        SDTricks_df = pl.DataFrame([[sddeal.to_pbn()]+[s for d in t.to_list() for s in d] for sddeal,t in zip(sd_deals,sd_dd_result_tables)],schema={'SD_Deal':pl.String}|{'_'.join(['SDTricks',d,s]):pl.UInt8 for d in 'NESW' for s in 'SHDCN'},orient='row')
 
-        dd_df = pl.DataFrame(rows,schema=['Deal']+[d+s for d in 'NSEW' for s in 'CDHSN'],orient='row')
-        fill_values = {i:0 for i in range(14)} # fill values for missing tricks
         for d in 'NSEW':
             for s in 'SHDCN':
-                # todo: convert this line from pandas to polars
+                # always create 14 rows (0-13 tricks taken) for combo of direction and suit. fill never-happened with proper index and 0.0 prob value.
                 #ns_ew_rows[(ns_ew,d,s)] = dd_df[d+s].to_pandas().value_counts(normalize=True).reindex(range(14), fill_value=0).tolist() # ['Fixed_Direction','Direction_Declarer','Suit']+['SD_Prob_Take_'+str(n) for n in range(14)]
-                vc = {ds:p for ds,p in dd_df[d+s].value_counts(normalize=True).rows()}
+                vc = {ds:p for ds,p in SDTricks_df['_'.join(['SDTricks',d,s])].value_counts(normalize=True).rows()}
                 index = {i:0.0 for i in range(14)} # fill values for missing probs
                 ns_ew_rows[(ns_ew,d,s)] = list((index|vc).values())
-    return ns_ew_rows
+
+    return SDTricks_df, ns_ew_rows
 
 
 # def append_single_dummy_results(pbns,sd_cache_d,produce=100):
@@ -180,20 +160,22 @@ def calculate_single_dummy_probabilities(deal, produce=100):
 
 # takes 1000 seconds for 100 sd calcs, or 10 sd calcs per second.
 def calculate_sd_probs(df, sd_productions=100, progress=None):
+
+    # calculate single dummy probabilities. if already calculated, use cache.
     sd_cache_d = {}
-    deals = df['Deal']
+    sd_dfs_d = {}
+    deals = df['Deal'] # string version is Deal. object version is Deal.
     for i,deal in enumerate(deals):
         if progress:
             percent_complete = int(i*100/len(deals))
             progress.progress(percent_complete,f"{percent_complete}%: {i} of {len(deals)} single dummies calculated using {sd_productions} samples")
         # st.write(f"{percent_complete}%: {i} of {len(deals)} boards. deal:{deal}")
         if deal not in sd_cache_d:
-            sd_cache_d[deal] = calculate_single_dummy_probabilities(deal, sd_productions) # all combinations of declarer pair direction, declarer direciton, suit, tricks taken
+            sd_dfs_d[deal], sd_cache_d[deal] = calculate_single_dummy_probabilities(deal, sd_productions) # all combinations of declarer pair direction, declarer direciton, suit, tricks taken
     if progress:
         progress.progress(100,f"100%: {len(deals)} of {len(deals)} single dummies calculated.")
 
-
-    # calculate single dummy trick taking probability distribution
+    # create single dummy trick taking probability distribution columns
     sd_probs_d = defaultdict(list)
     for deal in deals:
         v = sd_cache_d[deal]
@@ -203,34 +185,35 @@ def calculate_sd_probs(df, sd_productions=100, progress=None):
                 sd_probs_d['_'.join(['Probs',pair_direction,declarer_direction,suit,str(i)])].append(t)
     # st.write(sd_probs_d)
     sd_probs_df = pl.DataFrame(sd_probs_d,orient='row')
-    return sd_cache_d, sd_probs_df
+    return sd_dfs_d, sd_cache_d, sd_probs_df
 
 
-# calculate dict of contract result scores
+# calculate dict of contract result scores. each column contains (non-vul,vul) scores for each trick taken. sets are always penalty doubled.
 def calculate_scores():
-    SHDCN_suit_order = [3, 2, 1, 0, 4]
 
     scores_d = {}
-    for suit in SHDCN_suit_order:
+    for suit_char in 'SHDCN':
+        suit_index = 'CDHSN'.index(suit_char) # [3,2,1,0,4]
         for level in range(1,8): # contract level
             for tricks in range(14):
                 result = tricks-6-level
-                scores_d[(level,'SHDCN'[suit],tricks,False)] = Contract(level=level,denom=suit,declarer=0,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(False)
-                scores_d[(level,'SHDCN'[suit],tricks,True)] = Contract(level=level,denom=suit,declarer=0,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(True)
+                # sets are always penalty doubled
+                scores_d[(level,suit_char,tricks,False)] = Contract(level=level,denom=suit_index,declarer=0,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(False)
+                scores_d[(level,suit_char,tricks,True)] = Contract(level=level,denom=suit_index,declarer=0,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(True)
 
     # create score dataframe from dict
-    all_scores_d = defaultdict(list)
+    sd = defaultdict(list)
     for suit in 'SHDCN':
         for level in range(1,8):
             for i in range(14):
-                all_scores_d['_'.join(['Score',str(level)+suit])].append([scores_d[(level,suit,i,False)],scores_d[(level,suit,i,True)]])
+                sd['_'.join(['Score',str(level)+suit])].append([scores_d[(level,suit,i,False)],scores_d[(level,suit,i,True)]])
     # st.write(all_scores_d)
-    scores_df = pl.DataFrame(all_scores_d,orient='row')
-    #scores_df.index.name = 'Taken'
-    return all_scores_d, scores_df
+    scores_df = pl.DataFrame(sd,orient='row')
+    # scores_df.index.name = 'Taken'
+    return scores_d, scores_df
 
 
-def calculate_sd_expected_values(df,sd_cache_d,scores_d):
+def calculate_sd_expected_values(df,sd_cache_d,scores_df):
     # create dict of expected values (probability * score)
     exp_d = defaultdict(list)
     deal_vul = zip(df['Deal'],df['Vul'])
@@ -241,7 +224,7 @@ def calculate_sd_expected_values(df,sd_cache_d,scores_d):
             #st.write(pair_direction,declarer_direction,suit,probs,is_declarer_vul)
             for level in range(1,8):
                 #st.write(scores_d['_'.join(['Score',str(level)+suit])][is_declarer_vul])
-                exp_d['_'.join(['Exp',pair_direction,declarer_direction,suit,str(level)])].append(sum([prob*score[is_declarer_vul] for prob,score in zip(probs,scores_d['_'.join(['Score',str(level)+suit])])]))
+                exp_d['_'.join(['Exp',pair_direction,declarer_direction,suit,str(level)])].append(sum([prob*score[is_declarer_vul] for prob,score in zip(probs,scores_df['_'.join(['Score',str(level)+suit])])]))
             #st.write(exp_d)
     #st.write(exp_d)
     sd_exp_df = pl.DataFrame(exp_d,orient='row')
@@ -518,7 +501,7 @@ def LoadPage():
                 df = df.with_columns(
                     pl.Series('Deal',map(str,df['deal']),pl.String),
                     pl.Series('Dealer',map(lambda x: 'NESW'[x],df['_dealer']),pl.String),
-                    pl.Series('Vul',map(lambda x: ['None','NS','EW','Both'][x],df['_vul']),pl.String),
+                    pl.Series('Vul',map(lambda x: ['None','Both','NS','EW'][x],df['_vul']),pl.String),
                     pl.Series('Auction',map(lambda x: ', '.join(map(str,x[:3]))+' ...',df['auction']),pl.String),
                     pl.Series('Play',map(lambda x: ', '.join(map(str,x[:3]))+' ...',df['play']),pl.String),
                     pl.Series('Contract',map(str,df['_contract']),pl.String),
@@ -549,8 +532,12 @@ def LoadPage():
         st.caption("PBN Dataframe")
         ShowDataFrameTable(pbn_df, key='LoadPage_pbn_df')
 
+        scores_d, scores_df = calculate_scores()
+        st.caption("Scores Dataframe (not vul, vul)")
+        ShowDataFrameTable(scores_df, key='LoadPage_scores_df')
+
         DDTricks_progress = st.progress(0,"Calculating Double Dummy Tricks")
-        DDTricks_df, par_df, dd_score_df = calculate_ddtricks_par_scores(df, progress=DDTricks_progress)
+        DDTricks_df, par_df, dd_score_df = calculate_ddtricks_par_scores(df, scores_d, progress=DDTricks_progress)
         st.caption("Double Dummy Tricks Dataframe")
         ShowDataFrameTable(DDTricks_df, key='LoadPage_DDTricks_df')
         st.caption("Par Scores Dataframe")
@@ -562,15 +549,14 @@ def LoadPage():
         if st.session_state.single_dummy_sample_count:
             st.session_state.single_dummy_sample_count = single_dummy_sample_count_default
             sd_prob_progress = st.progress(0,f"Calculating Single Dummy Probabilities from {st.session_state.single_dummy_sample_count} Samples")
-            sd_cache_d, sd_probs_df = calculate_sd_probs(df, st.session_state.single_dummy_sample_count, progress=sd_prob_progress)
+            sd_dfs_d, sd_cache_d, sd_probs_df = calculate_sd_probs(df, st.session_state.single_dummy_sample_count, progress=sd_prob_progress)
+            sd_samples_df = pl.concat([v for v in sd_dfs_d.values()])
+            st.caption(f"Single Dummy Samples Dataframe Using {st.session_state.single_dummy_sample_count} Samples")
+            ShowDataFrameTable(sd_samples_df, key='LoadPage_sd_samples_df')
             st.caption(f"Single Dummy Probabilities Dataframe Using {st.session_state.single_dummy_sample_count} Samples")
             ShowDataFrameTable(sd_probs_df, key='LoadPage_sd_probs_df')
 
-            scores_d, scores_df = calculate_scores()
-            st.caption("Scores Dataframe (not vul, vul)")
-            ShowDataFrameTable(scores_df, key='LoadPage_scores_df')
-
-            sd_expected_values_df = calculate_sd_expected_values(df, sd_cache_d, scores_d)
+            sd_expected_values_df = calculate_sd_expected_values(df, sd_cache_d, scores_df)
             st.caption("Single Dummy Expected Values Dataframe")
             ShowDataFrameTable(sd_expected_values_df, key='LoadPage_sd_expected_values_df')
 
@@ -618,7 +604,13 @@ def create_sidebar():
 
 if __name__ == '__main__':
 
-    # Configurations
+    # first time only defaults
+    if 'first_time_only_initialized' not in st.session_state:
+        st.session_state.first_time_only_initialized = True
+        st.set_page_config(layout="wide")
+        streamlitlib.widen_scrollbars()
+
+    # Refreshable defaults
     app_datetime = datetime.fromtimestamp(pathlib.Path(__file__).stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
     #pbn_filename_default = 'DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'  # local filename
     single_dummy_sample_count_default = 2  # number of random deals to generate for calculating single dummy probabilities. Use smaller number for testing.
