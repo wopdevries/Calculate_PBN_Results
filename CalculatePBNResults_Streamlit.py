@@ -1,5 +1,5 @@
 
-# streamlit program to display deal statistics from a PBN file.
+# streamlit program to display Bridge game deal statistics from a PBN file.
 # Invoke from system prompt using: streamlit run CalculatePBNResults_Streamlit.py
 
 import streamlit as st
@@ -25,25 +25,29 @@ import streamlitlib
 
 def create_df_from_pbn(boards):
     # this may look weird but there's all sorts of opportunities to error otherwise. polars was giving rust errors when creating a DataFrame from a list of objects.
+    # not sure if future requirements will need class variables from Auction, Play and deal objects.
     cols_d = {k:[getattr(b,k) for b in boards] for k in vars(boards[0])} # create dict with keys of column names and values are rows
     simple_data_type_cols = ['board_num', '_dealer', '_vul', 'claimed']
-    simples = pl.DataFrame([cols_d[col] for col in simple_data_type_cols],schema=simple_data_type_cols)
-    infos = pl.DataFrame(cols_d['info']) # automatically expands dict keys to columns
-    contracts = pl.DataFrame(cols_d['_contract'],schema=['_contract'])
-    # todo: play needs __repr__ output
-    plays = pl.DataFrame(map(str,cols_d['play']),schema=['play'])
-    # plays = pl.DataFrame(cols_d['play'],schema=['play']) # polars.exceptions.ShapeError: data does not match the number of columns
-    # [PenaltyBid(penalty=<Penalty.passed: 1>, alertable=False, announcement=None), ContractBid(denom=<Denom.clubs: 3>, level=1, alertable=False, announcement=None), PenaltyBid(penalty=<Penalty.doubled: 2>, alertable=False, announcement=None), ContractBid(denom=<Denom.spades: 0>, level=1, alertable=False, announcement=None)]
-    # todo: auctions needs __repr__ output
-    auctions = pl.DataFrame(map(str,cols_d['auction']),schema=['auction'])
-    # auctions = pl.DataFrame(cols_d['auction'],schema=['auction']) # polars.exceptions.ShapeError: data does not match the number of columns
-    deals = pl.DataFrame(cols_d['deal'],schema=['deal'])
-    df = pl.concat([simples,infos,contracts,plays,auctions,deals],how='horizontal')
+    df = pl.concat([
+        pl.DataFrame([cols_d[col] for col in simple_data_type_cols],schema=simple_data_type_cols),
+        pl.DataFrame(cols_d['info']), # automatically expands dict keys to columns,
+        pl.Series('Contract',map(str,cols_d['_contract']),pl.String).to_frame(),
+        #pl.DataFrame(map(str,cols_d['play']),schema=['play']),
+        #pl.DataFrame(map(str,cols_d['auction']),schema=['auction']),
+        pl.Series('Auction',map(lambda x: ', '.join(map(str,x[:3]))+' ...',cols_d['auction']),pl.String).to_frame(),
+        pl.Series('Play',map(lambda x: ', '.join(map(str,x[:3]))+' ...',cols_d['play']),pl.String).to_frame(),
+        # might have to save original deal object or create columns for first, trump, complete_deal.
+        #pl.Series('deal',cols_d['deal'],pl.Object).to_frame(),
+        pl.Series('Deal',[deal.to_pbn() for deal in cols_d['deal']],pl.String).to_frame(),
+        pl.Series('Dealer',map(lambda x: 'NESW'[x],cols_d['_dealer']),pl.String).to_frame(),
+        pl.Series('Vul',map(lambda x: ['None','Both','NS','EW'][x],cols_d['_vul']),pl.String).to_frame(),
+    ],how='horizontal')
+    df = df.rename({'board_num':'Board','claimed':'Claimed'})
     return df
 
 
 #NSEW_endplay_indexes = [0, 2, 1, 3]
-SHDCN_endplay_indexes = [3, 2, 1, 0, 4]
+#SHDCN_endplay_indexes = [3, 2, 1, 0, 4]
 
 def display_double_dummy_deals(deals, dd_result_tables, deal_index=0, max_display=4):
     # Display a few hands and double dummy tables
@@ -56,7 +60,7 @@ def display_double_dummy_deals(deals, dd_result_tables, deal_index=0, max_displa
 
 def calculate_ddtricks_par_scores(df, scores_d, progress=None):
 
-    deals = df['deal'] # object version is deal. string version is Deal.
+    deals = list(map(Deal,df['Deal'])) # might have to save original deal object or create columns first, trump, complete_deal. recreating from string here.
 
     # Calculate double dummy and par
     dd_result_tables = calc_double_dummy_deals(deals, progress=progress)
@@ -64,7 +68,7 @@ def calculate_ddtricks_par_scores(df, scores_d, progress=None):
     #display_double_dummy_deals(deals, dd_result_tables, 0, 4)
 
     # Create dataframe of par scores using double dummy
-    pars = [par(rt, Vul.find(v), 0) for rt, v in zip(dd_result_tables, df['Vul'])]  # middle arg is board number (if int) otherwise enum vul. Must use Vul.find(v) because uncorrelated to board number.
+    pars = [par(rt, Vul.find(v), Player.north) for rt, v in zip(dd_result_tables, df['Vul'])]  # middle arg is board number (if int) otherwise enum vul. Must use Vul.find(v) because uncorrelated to board number.
     par_scores_ns = [parlist.score for parlist in pars]
     par_scores_ew = [-score for score in par_scores_ns]
     par_contracts = [', '.join([str(contract.level) + 'SHDCN'[int(contract.denom)] + contract.declarer.abbr + contract.penalty.abbr + ('' if contract.result == 0 else '+'+str(contract.result) if contract.result > 0 else str(contract.result)) for contract in parlist]) for parlist in pars]
@@ -164,7 +168,7 @@ def calculate_sd_probs(df, sd_productions=100, progress=None):
     # calculate single dummy probabilities. if already calculated, use cache.
     sd_cache_d = {}
     sd_dfs_d = {}
-    deals = df['Deal'] # string version is Deal. object version is Deal.
+    deals = df['Deal']
     for i,deal in enumerate(deals):
         if progress:
             percent_complete = int(i*100/len(deals))
@@ -198,8 +202,8 @@ def calculate_scores():
             for tricks in range(14):
                 result = tricks-6-level
                 # sets are always penalty doubled
-                scores_d[(level,suit_char,tricks,False)] = Contract(level=level,denom=suit_index,declarer=0,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(False)
-                scores_d[(level,suit_char,tricks,True)] = Contract(level=level,denom=suit_index,declarer=0,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(True)
+                scores_d[(level,suit_char,tricks,False)] = Contract(level=level,denom=suit_index,declarer=Player.north,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(Vul.none)
+                scores_d[(level,suit_char,tricks,True)] = Contract(level=level,denom=suit_index,declarer=Player.north,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(Vul.both)
 
     # create score dataframe from dict
     sd = defaultdict(list)
@@ -442,6 +446,7 @@ def LoadPage():
     boards = None
     df = None
     everything_df = None
+    # todo: only local intermediate files implemented. is it possible to access them using a url? it gets complicated.
     if url.endswith('_boards.pkl'):
         if not path_url.exists():
             st.warning(f"{url} does not exist.")
@@ -470,9 +475,13 @@ def LoadPage():
         path_url = pathlib.Path(url)
     else:
         with st.spinner(f"Loading {url} ..."):
-            of = fsspec.open(url, mode='r', encoding='utf-8')
-            with of as f:
-                pbn_data = f.read()
+            try:
+                of = fsspec.open(url, mode='r', encoding='utf-8')
+                with of as f:
+                    pbn_data = f.read()
+            except Exception as e:
+                st.error(f"Error opening {url}: {e}")
+                return
 
         if boards is None and df is None:
             with st.spinner("Parsing PBN file ..."):
@@ -482,7 +491,7 @@ def LoadPage():
                     return
                 if len(boards) > recommended_board_max:
                     st.warning(f"{url} has {len(boards)} boards. More than {recommended_board_max} boards may result in instability.")
-        if save_files:
+        if save_intermediate_files:
             boards_url = pathlib.Path(path_url.stem+'_boards').with_suffix('.pkl')
             boards_path = pathlib.Path(boards_url)
             with st.spinner(f"Saving {boards_url} file ..."):
@@ -493,31 +502,17 @@ def LoadPage():
     if everything_df is None:
         if df is None:
             with st.spinner("Creating PBN Dataframe ..."):
-                #st.write(f"Number of boards: {len(boards)}")
-                #st.write(vars(boards[0]))
                 df = create_df_from_pbn(boards)
-            with st.spinner("Cleaning and Augmenting PBN Dataframe ..."):
-                # Other dataframe components don't do implicit str conversion like pl.DataFrame. Must manually convert object columns to strings.
-                df = df.with_columns(
-                    pl.Series('Deal',map(str,df['deal']),pl.String),
-                    pl.Series('Dealer',map(lambda x: 'NESW'[x],df['_dealer']),pl.String),
-                    pl.Series('Vul',map(lambda x: ['None','Both','NS','EW'][x],df['_vul']),pl.String),
-                    pl.Series('Auction',map(lambda x: ', '.join(map(str,x[:3]))+' ...',df['auction']),pl.String),
-                    pl.Series('Play',map(lambda x: ', '.join(map(str,x[:3]))+' ...',df['play']),pl.String),
-                    pl.Series('Contract',map(str,df['_contract']),pl.String),
-                )
-                df = df.rename({'board_num':'Board','claimed':'Claimed'})
                 # todo: have to exclude auction: ArrowInvalid: Could not convert PenaltyBid(penalty=<Penalty.passed: 1>, alertable=False, announcement=None) with type PenaltyBid: did not recognize Python value type when inferring an Arrow data type
-                # if save_files:
-                #     # save df as pickle because it contains object columns. later, they're dropped when creating pbn_df.
-                #     df_url = pathlib.Path(path_url.stem+'_df').with_suffix('.pkl')
-                #     df_path = pathlib.Path(df_url)
-                #     with st.spinner(f"Saving {df_url} file ..."):
-                #         with open(df_path, 'wb') as f:
-                #             exclude_columns = ['deal','_dealer','_vul','auction','play','_contract'] # todo: fix this. shouldn't have to exclude. object issue.
-                #             pickle.dump(df.select(pl.exclude(exclude_columns)), f)
-                #     st.caption(f"Saved {df_url}. File length is {df_path.stat().st_size} bytes.")
-        exclude_columns = ['deal','_dealer','_vul','auction','play','_contract']
+                if save_intermediate_files:
+                    # save df as pickle because it contains object columns. later, they're dropped when creating pbn_df.
+                    df_url = pathlib.Path(path_url.stem+'_df').with_suffix('.pkl')
+                    df_path = pathlib.Path(df_url)
+                    with st.spinner(f"Saving {df_url} file ..."):
+                        with open(df_path, 'wb') as f:
+                            pickle.dump(df, f)
+                    st.caption(f"Saved {df_url}. File length is {df_path.stat().st_size} bytes.")
+        exclude_columns = ['deal','_dealer','_vul','auction','play','_contract'] # drop obsolete columns or object data types. some of these may have been dropped earlier
         column_order = ['Date','Scoring','Board','Room','Deal','North','East','South','West','Dealer','Vul','Auction','Contract','Play','Score','Claimed','Event','Site','BCFlags']
         column_order = [c for c in column_order if c in df.columns]
         # add any not-well-known columns but prepend with underscore to avoid conflicts
@@ -565,7 +560,7 @@ def LoadPage():
             ShowDataFrameTable(sd_best_contract_df, key='LoadPage_sd_best_contract_df')
             everything_df = pl.concat([everything_df,sd_probs_df,scores_df,sd_expected_values_df,sd_best_contract_df],how='horizontal')
             everything_df = create_augmented_df(everything_df)
-        if save_files:
+        if save_intermediate_files:
             everythingdf_url = pathlib.Path(path_url.stem+'_everythingdf').with_suffix('.parquet')
             everythingdf_path = pathlib.Path(everythingdf_url)
             with st.spinner(f"Saving {everythingdf_url} file ..."):
@@ -617,7 +612,7 @@ if __name__ == '__main__':
     st.session_state.single_dummy_sample_count = single_dummy_sample_count_default
     show_sql_query_default = True
     st.session_state.show_sql_query = show_sql_query_default
-    save_files = False
+    save_intermediate_files = False # leave False for now. saving intermediate files presents problems with persistance. where to do it? how to clean up? how to handle multiple users?
     recommended_board_max = 10000
 
     create_sidebar()
