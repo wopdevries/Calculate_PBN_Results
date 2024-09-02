@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 import sys
 
 import endplay # for __version__
-from endplay.parsers import pbn
+from endplay.parsers import pbn, lin, json
 from endplay.types import Deal, Contract, Denom, Player, Penalty, Vul
 from endplay.dds import par, calc_all_tables
 from endplay.dealer import generate_deals
@@ -42,6 +42,13 @@ def create_df_from_pbn(boards):
         pl.Series('Dealer',map(lambda x: 'NESW'[x],cols_d['_dealer']),pl.String).to_frame(),
         pl.Series('Vul',map(lambda x: ['None','Both','NS','EW'][x],cols_d['_vul']),pl.String).to_frame(),
     ],how='horizontal')
+    # lin parser doesn't have a Score column. Using _contract, _vul to calculate Score.
+    # todo: this isn't quite right. instead of using the Score column later on, it would be better to use _contract and _vul columns to calculate the score -- i.e. ignore the Score column.
+    # but this means refactoring to keep all objects in the cols_d dict like deal, auction, play, contract. this creates a problem for saving of intermediate dataframes. Use Score for now.
+    if 'Score' not in cols_d:
+        df = df.with_columns(
+            pl.Series('Score',[['NS','EW','NS','EW'][contract.declarer]+' '+str(contract.score(vul)) for contract,vul in zip(cols_d['_contract'],cols_d['_vul'])],pl.String) # PBN style
+        )
     df = df.rename({'board_num':'Board','claimed':'Claimed'})
     return df
 
@@ -294,7 +301,7 @@ def convert_score_to_score(df):
 
 
 def create_augmented_df(df):
-    df = df.clone()
+    #df = df.clone()
     df = df.rename({'North':'N','East':'E','South':'S','West':'W'}) # todo: is this really better?
 
     df = df.with_columns(
@@ -382,8 +389,8 @@ def display_experiments(df):
         # st.write(f"Frequency where exceeding ExpMaxScore_Diff_NS: All:{all} Open:{open} Closed:{closed} Open-Closed:{open-closed}")
 
 
-def ShowDataFrameTable(df, key, query='SELECT * FROM df'):
-    if st.session_state.show_sql_query:
+def ShowDataFrameTable(df, key, query='SELECT * FROM df', show_sql_query=True):
+    if show_sql_query and st.session_state.show_sql_query:
         st.caption(f"SQL Query: {query}")
     try:
         df = duckdb.sql(query).df() # returns a pandas dataframe
@@ -429,14 +436,45 @@ def sql_query_on_change():
     st.session_state.show_sql_query = st.session_state.create_sidebar_show_sql_query_checkbox
     if 'df' in st.session_state:
         LoadPage()
-    #pass # do nothing
+
+
+def LoadPage_LIN(file_data,url,path_url,boards,df,everything_df):
+    #st.error(f"Unsupported file type: {path_url.suffix}")
+    boards = lin.loads(file_data)
+    return boards
+
+
+def LoadPage_JSON(file_data,url,path_url,boards,df,everything_df):
+    st.error(f"Unsupported file type: {path_url.suffix}")
+    return None
+    boards = json.loads(file_data)
+    return boards
+
+
+def LoadPage_PBN(file_data,url,path_url,boards,df,everything_df):
+    if boards is None and df is None:
+        with st.spinner("Parsing PBN file ..."):
+            boards = pbn.loads(file_data)
+            if len(boards) == 0:
+                st.warning(f"{url} has no boards.")
+                return
+            if len(boards) > recommended_board_max:
+                st.warning(f"{url} has {len(boards)} boards. More than {recommended_board_max} boards may result in instability.")
+    if save_intermediate_files:
+        boards_url = pathlib.Path(path_url.stem+'_boards').with_suffix('.pkl')
+        boards_path = pathlib.Path(boards_url)
+        with st.spinner(f"Saving {boards_url} file ..."):
+            with open(boards_path, 'wb') as f:
+                pickle.dump(boards, f)
+            st.caption(f"Saved {boards_url}. File length is {boards_path.stat().st_size} bytes.")
+    return boards
 
 
 def LoadPage():
 
     #with st.session_state.chat_container:
 
-    url = st.session_state.create_sidebar_text_input_url
+    url = st.session_state.create_sidebar_text_input_url.strip()
     st.caption(f"Selected PBN file: {url}") # using protocol:{get_url_protocol(url)}")
 
     if url is None or url == '' or (get_url_protocol(url) == 'file' and ('/' in url and '\\' in url and '&' in url)):
@@ -456,6 +494,7 @@ def LoadPage():
                 boards = pickle.load(f)
         url = url.replace('_boards.pkl','')
         path_url = pathlib.Path(url)
+        Process_PBN(boards,df,everything_df,path_url)
     elif url.endswith('_df.pkl'):
         if not path_url.exists():
             st.warning(f"{url} does not exist.")
@@ -465,6 +504,7 @@ def LoadPage():
                 df = pickle.load(f)
         url = url.replace('_df.pkl','')
         path_url = pathlib.Path(url)
+        Process_PBN(boards,df,everything_df,path_url)
     elif url.endswith('_everythingdf.parquet'):
         if not path_url.exists():
             st.warning(f"{url} does not exist.")
@@ -473,32 +513,36 @@ def LoadPage():
             everything_df = pl.read_parquet(path_url)
         url = url.replace('_everythingdf.parquet','')
         path_url = pathlib.Path(url)
+        Process_PBN(boards,df,everything_df,path_url)
     else:
         with st.spinner(f"Loading {url} ..."):
             try:
                 of = fsspec.open(url, mode='r', encoding='utf-8')
                 with of as f:
-                    pbn_data = f.read()
+                    match path_url.suffix:
+                        case '.pbn':
+                            file_data = f.read()
+                            boards = LoadPage_PBN(file_data,url,path_url,boards,df,everything_df)
+                        case '.lin':
+                            file_data = f.read()
+                            boards = LoadPage_LIN(file_data,url,path_url,boards,df,everything_df)
+                        case '.json':
+                            file_data = f.read()
+                            boards = LoadPage_JSON(file_data,url,path_url,boards,df,everything_df)
+                        case _:
+                            st.error(f"Unsupported file type: {path_url.suffix}")
+                            return
             except Exception as e:
-                st.error(f"Error opening {url}: {e}")
+                st.error(f"Error opening or reading {url}: {e}")
                 return
+    if boards is None:
+        st.error(f"Unimplemented file type: {path_url.suffix}")
+        return # not yet implemented
+    Process_PBN(path_url,boards,df,everything_df)
+    return
 
-        if boards is None and df is None:
-            with st.spinner("Parsing PBN file ..."):
-                boards = pbn.loads(pbn_data)
-                if len(boards) == 0:
-                    st.warning(f"{url} has no boards.")
-                    return
-                if len(boards) > recommended_board_max:
-                    st.warning(f"{url} has {len(boards)} boards. More than {recommended_board_max} boards may result in instability.")
-        if save_intermediate_files:
-            boards_url = pathlib.Path(path_url.stem+'_boards').with_suffix('.pkl')
-            boards_path = pathlib.Path(boards_url)
-            with st.spinner(f"Saving {boards_url} file ..."):
-                with open(boards_path, 'wb') as f:
-                    pickle.dump(boards, f)
-                st.caption(f"Saved {boards_url}. File length is {boards_path.stat().st_size} bytes.")
 
+def Process_PBN(path_url,boards,df,everything_df):
     if everything_df is None:
         if df is None:
             with st.spinner("Creating PBN Dataframe ..."):
@@ -525,20 +569,20 @@ def LoadPage():
         pbn_df = df.select(pl.col(column_order))
     
         st.caption("PBN Dataframe")
-        ShowDataFrameTable(pbn_df, key='LoadPage_pbn_df')
+        ShowDataFrameTable(pbn_df, show_sql_query=False, key='LoadPage_pbn_df')
 
         scores_d, scores_df = calculate_scores()
         st.caption("Scores Dataframe (not vul, vul)")
-        ShowDataFrameTable(scores_df, key='LoadPage_scores_df')
+        ShowDataFrameTable(scores_df, show_sql_query=False, key='LoadPage_scores_df')
 
         DDTricks_progress = st.progress(0,"Calculating Double Dummy Tricks")
         DDTricks_df, par_df, dd_score_df = calculate_ddtricks_par_scores(df, scores_d, progress=DDTricks_progress)
         st.caption("Double Dummy Tricks Dataframe")
-        ShowDataFrameTable(DDTricks_df, key='LoadPage_DDTricks_df')
+        ShowDataFrameTable(DDTricks_df, show_sql_query=False, key='LoadPage_DDTricks_df')
         st.caption("Par Scores Dataframe")
-        ShowDataFrameTable(par_df, key='LoadPage_par_df')
+        ShowDataFrameTable(par_df, show_sql_query=False, key='LoadPage_par_df')
         st.caption("Double Dummy Scores Dataframe")
-        ShowDataFrameTable(dd_score_df, key='LoadPage_dd_score_df')
+        ShowDataFrameTable(dd_score_df, show_sql_query=False, key='LoadPage_dd_score_df')
 
         everything_df = pl.concat([pbn_df,DDTricks_df,par_df,dd_score_df],how='horizontal')
         if st.session_state.single_dummy_sample_count:
@@ -547,18 +591,18 @@ def LoadPage():
             sd_dfs_d, sd_cache_d, sd_probs_df = calculate_sd_probs(df, st.session_state.single_dummy_sample_count, progress=sd_prob_progress)
             sd_samples_df = pl.concat([v for v in sd_dfs_d.values()])
             st.caption(f"Single Dummy Samples Dataframe Using {st.session_state.single_dummy_sample_count} Samples")
-            ShowDataFrameTable(sd_samples_df, key='LoadPage_sd_samples_df')
+            ShowDataFrameTable(sd_samples_df, show_sql_query=False, key='LoadPage_sd_samples_df')
             st.caption(f"Single Dummy Probabilities Dataframe Using {st.session_state.single_dummy_sample_count} Samples")
-            ShowDataFrameTable(sd_probs_df, key='LoadPage_sd_probs_df')
+            ShowDataFrameTable(sd_probs_df, show_sql_query=False, key='LoadPage_sd_probs_df')
 
             sd_expected_values_df = calculate_sd_expected_values(df, sd_cache_d, scores_df)
             st.caption("Single Dummy Expected Values Dataframe")
-            ShowDataFrameTable(sd_expected_values_df, key='LoadPage_sd_expected_values_df')
+            ShowDataFrameTable(sd_expected_values_df, show_sql_query=False, key='LoadPage_sd_expected_values_df')
 
             sd_best_contract_df = calculate_best_contracts(sd_expected_values_df)
             st.caption("Single Dummy Best Contracts Dataframe")
-            ShowDataFrameTable(sd_best_contract_df, key='LoadPage_sd_best_contract_df')
-            everything_df = pl.concat([everything_df,sd_probs_df,scores_df,sd_expected_values_df,sd_best_contract_df],how='horizontal')
+            ShowDataFrameTable(sd_best_contract_df, show_sql_query=False, key='LoadPage_sd_best_contract_df')
+            everything_df = pl.concat([everything_df,sd_probs_df,sd_expected_values_df,sd_best_contract_df],how='horizontal')
             everything_df = create_augmented_df(everything_df)
         if save_intermediate_files:
             everythingdf_url = pathlib.Path(path_url.stem+'_everythingdf').with_suffix('.parquet')
@@ -588,7 +632,13 @@ def create_sidebar():
     #default_url = r'file://DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
     default_url = 'https://raw.githubusercontent.com/BSalita/Calculate_PBN_Results/master/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
     #default_url = 'GIB-Thorvald-8638-2024-08-23.pbn'
-    st.sidebar.text_input('Enter PBN URL:', default_url, key='create_sidebar_text_input_url', help='Enter a URL or pathless local file name.') # , on_change=LoadPage
+    st.sidebar.text_input('Enter PBN URL:', default_url, on_change=LoadPage, key='create_sidebar_text_input_url', help='Enter a URL or pathless local file name.') # , on_change=LoadPage
+    # using css to change button color for the entire button width. The color was choosen to match the the restrictive text colorizer (:green-background[Go]) used in st.info() below.
+    css = """section[data-testid="stSidebar"] div.stButton button {
+        background-color: rgba(33, 195, 84, 0.1);
+        width: 50px;
+        }"""
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
     st.sidebar.button('Go', on_click=LoadPage, key='create_sidebar_go_button', help='Load PBN data from URL.')
 
     st.sidebar.number_input('Single Dummy Sample Count',value=single_dummy_sample_count_default,key='create_sidebar_single_dummy_sample_count',on_change=sample_count_on_change,min_value=1,max_value=1000,step=1,help='Number of random deals to generate for calculating single dummy probabilities. Larger number (10 to 30) is more accurate but slower. Use 1 to 5 for fast, less accurate results.')
@@ -620,7 +670,7 @@ if __name__ == '__main__':
     if 'df' not in st.session_state:
         st.title("Calculate PBN Deal Statistics")
         app_info()
-        st.info("*Start by clicking the Go button on the left sidebar.*")
+        st.info("*Start by entering a URL and clicking the :green-background[Go] button on the left sidebar.* The process takes 1 to 2 minutes to complete. When the running man in the top right corner stops, the data is ready for query.")
     else:
         st.chat_input('Enter a SQL query e.g. SELECT * FROM df', key='main_prompt_chat_input', on_submit=chat_input_on_submit)
 
