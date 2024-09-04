@@ -7,3 +7,9 @@ streamlit
 streamlit-aggrid
 matplotlib
 seaborn
+reportlab
+markdown
+bs4
+requests
+aiohttp
+

@@ -203,14 +203,16 @@ def calculate_sd_probs(df, sd_productions=100, progress=None):
 def calculate_scores():
 
     scores_d = {}
+    suit_to_denom = [Denom.clubs, Denom.diamonds, Denom.hearts, Denom.spades, Denom.nt]
     for suit_char in 'SHDCN':
         suit_index = 'CDHSN'.index(suit_char) # [3,2,1,0,4]
+        denom = suit_to_denom[suit_index]
         for level in range(1,8): # contract level
             for tricks in range(14):
                 result = tricks-6-level
                 # sets are always penalty doubled
-                scores_d[(level,suit_char,tricks,False)] = Contract(level=level,denom=suit_index,declarer=Player.north,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(Vul.none)
-                scores_d[(level,suit_char,tricks,True)] = Contract(level=level,denom=suit_index,declarer=Player.north,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(Vul.both)
+                scores_d[(level,suit_char,tricks,False)] = Contract(level=level,denom=denom,declarer=Player.north,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(Vul.none)
+                scores_d[(level,suit_char,tricks,True)] = Contract(level=level,denom=denom,declarer=Player.north,penalty=Penalty.passed if result>=0 else Penalty.doubled,result=result).score(Vul.both)
 
     # create score dataframe from dict
     sd = defaultdict(list)
@@ -393,6 +395,7 @@ def ShowDataFrameTable(df, key, query='SELECT * FROM df', show_sql_query=True):
     if show_sql_query and st.session_state.show_sql_query:
         st.caption(f"SQL Query: {query}")
     try:
+        # todo: could implement duckdb.execute(query) to implement multiple statements. duckdb.sql(query) only works for one select statements.
         df = duckdb.sql(query).df() # returns a pandas dataframe
     except Exception as e:
         st.error(f"Invalid SQL Query: {query} {e}")
@@ -405,9 +408,8 @@ def ShowDataFrameTable(df, key, query='SELECT * FROM df', show_sql_query=True):
     return False
 
 
-
 def app_info():
-    st.caption(f"Project lead is Robert Salita research@AiPolice.org. Code written in Python. UI written in Streamlit. Data engine is Pandas. Bridge lib is endplay. Self hosted using Cloudflare Tunnel. Repo:https://github.com/BSalita/Calculate_PBN_Results")
+    st.caption(f"Project lead is Robert Salita research@AiPolice.org. Code written in Python. UI written in streamlit. Data engine is polars. Query engine is duckdb. Bridge lib is endplay. Self hosted using Cloudflare Tunnel. Repo:https://github.com/BSalita/Calculate_PBN_Results")
     st.caption(
         f"App:{app_datetime} Python:{'.'.join(map(str, sys.version_info[:3]))} Streamlit:{st.__version__} Pandas:{pd.__version__} polars:{pl.__version__} endplay:{endplay.__version__} Query Params:{st.query_params.to_dict()}")
 
@@ -442,6 +444,52 @@ def LoadPage_LIN(file_data,url,path_url,boards,df,everything_df):
     #st.error(f"Unsupported file type: {path_url.suffix}")
     boards = lin.loads(file_data)
     return boards
+
+
+# Written mostly be chatgpt.
+# Define the recursive flattening function
+def flatten_df(df):
+    """
+    Recursively flattens a Polars DataFrame by unnesting struct fields
+    and exploding lists, handling any level of nested lists and structs.
+    
+    Parameters:
+    - df: Polars DataFrame with potentially nested data
+    
+    Returns:
+    - Fully flattened Polars DataFrame with no lists or structs
+    """
+
+    # Iterate through all columns in the DataFrame
+    for col_name in df.columns:
+        col = df[col_name]
+        dtype = col.dtype
+
+        # If the column is a Struct, unnest it
+        if dtype.base_type() == pl.Struct:
+            # Get the fields of the struct
+            fields = col.struct.fields
+            # Unnest each field into a new column
+            for field in fields:
+                new_col_name = f"{col_name}_{field}"
+                df = df.with_columns(col.struct.field(field).alias(new_col_name))
+            # Drop the original struct column
+            assert col_name in df.columns, col_name
+            df = df.drop(col_name)
+            return flatten_df(df) # only recurse if df is changed
+        
+        # If the column is a List, get the first element and check if it is a Struct, if so, unnest it.
+        elif dtype.base_type() == pl.List:
+            # unnest the inner struct
+            print('List:', col_name, dtype.inner, col[0] is None, dtype, dtype.base_type())
+            if df.height:
+                if col[0] is not None:
+                    if col[0].dtype.base_type() == pl.Struct:
+                        # confused here: why does concat need to be done after unnest? I thought it unnests in place and drops the original column.
+                        df = pl.concat([df,col[0].struct.unnest()],how='horizontal')
+                        return flatten_df(df.drop(col_name)) # only recurse if df is changed
+    
+    return df
 
 
 def LoadPage_JSON(file_data,url,path_url,boards,df,everything_df):
@@ -528,7 +576,15 @@ def LoadPage():
                             boards = LoadPage_LIN(file_data,url,path_url,boards,df,everything_df)
                         case '.json':
                             file_data = f.read()
-                            boards = LoadPage_JSON(file_data,url,path_url,boards,df,everything_df)
+                            json_data = json.loads(file_data)
+                            json_df = pl.DataFrame(json_data)
+                            df = flatten_df(json_df)
+                            st.dataframe(df)
+                            return
+                            #pass
+                            # b = boards.unnest('Matches')
+                            # pl.DataFrame(b['Sessions'][0].struct.unnest())
+                            #boards = LoadPage_JSON(file_data,url,path_url,boards,df,everything_df)
                         case _:
                             st.error(f"Unsupported file type: {path_url.suffix}")
                             return
@@ -668,7 +724,7 @@ if __name__ == '__main__':
     create_sidebar()
 
     if 'df' not in st.session_state:
-        st.title("Calculate PBN Deal Statistics")
+        st.title("PBN Statistics Generator and Query Engine")
         app_info()
         st.info("*Start by entering a URL and clicking the :green-background[Go] button on the left sidebar.* The process takes 1 to 2 minutes to complete. When the running man in the top right corner stops, the data is ready for query.")
     else:
