@@ -1,16 +1,50 @@
+# for app.py
+streamlit
+streamlit-extras
+streamlit-chat
+stqdm
+openai
 pandas
 polars
 duckdb
-fsspec
+requests
+urllib3
+python-dotenv
+tenacity
+termcolor
+streamlit-chat
+bs4
 endplay
-streamlit
-streamlit-extras
-streamlit-aggrid
-matplotlib
-seaborn
+pyparse
+#pyparse>=3.0.0
+sqlalchemy
+sqlalchemy_utils
+safetensors
+scikit-learn
+fastai
+torch
+torchvision
+torchaudio
+
+# for streamlitlib
 reportlab
 markdown
-bs4
-requests
 aiohttp
+
+
+# for mlBridgeLib
+numpy
+pathlib
+scikit-learn
+matplotlib
+IPython
+streamlit-aggrid
+seaborn
+
+# for acbllib
+
+# for chatlib
+
+# for pytorch lightning
+
 
