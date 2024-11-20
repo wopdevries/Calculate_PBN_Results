@@ -4,6 +4,7 @@ duckdb
 fsspec
 endplay
 streamlit
+streamlit-extras
 streamlit-aggrid
 matplotlib
 seaborn

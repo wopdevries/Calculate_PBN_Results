@@ -300,6 +300,10 @@ def validate_brs(brs):
     return True
 
 
+def LinToPBN(df):
+    return ['N:'+' '.join(['.'.join(list(map(lambda x: x[::-1], re.split('S|H|D|C', hh)))[1:]) for hh in r]) for r in df.select(pl.col(r'^Hand_[NESW]$')).rows()]
+    
+
 def brs_to_pbn(brs,void='',ten='T'):
     r = r'S(.*)H(.*)D(.*)C(.*)'
     rs = r*4
@@ -458,7 +462,7 @@ def LoTT_SHDC(ddmakes,lengths):
 
 
 def ContractType(tricks,suit):
-    if tricks < 7:
+    if tricks is None or tricks < 7:
         ct = 'Pass'
     elif tricks == 12:
         ct = 'SSlam'
@@ -497,10 +501,10 @@ def CategorifyContractTypeBySuit(ddmakes):
     return contract_types_d
 
 
-# Create columns of contract types by partnership by suit by contract. e.g. CT_NS_C_Game
+# Create columns of contract type booleans by partnership by suit by contract. e.g. CT_NS_C_Game
 def CategorifyContractTypeByDirection(df):
     contract_types_d = {}
-    cols = df.select(pl.selectors.matches(r'CT_(NS|EW)_[CDHSN]')).columns
+    cols = df.select(pl.col(r'^CT_(NS|EW)_[CDHSN]$')).columns
     for c in cols:
         for t in contract_types:
             #print_to_log_debug('CT:',c,t)
