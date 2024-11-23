@@ -1,8 +1,8 @@
 # Contains functions for:
 # 1. reading endplay compatible files
 # 2. creates endplay board classes
-# 3. creates endplay polars df from boards classes
-# 4. converts endplay df to mlBridge df
+# 3. creates an endplay polars df from boards classes
+# 4. converts the endplay df to a mlBridge df
 
 
 import polars as pl
@@ -10,8 +10,6 @@ import pickle
 from collections import defaultdict
 
 import endplay.parsers.lin as lin
-
-import mlBridgeLib
 
 
 def lin_files_to_boards_dict(lin_files_l,boards_d,bbo_lin_files_cache_file=None):

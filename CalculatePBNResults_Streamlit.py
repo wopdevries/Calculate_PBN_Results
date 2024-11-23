@@ -3,7 +3,10 @@
 # Invoke from system prompt using: streamlit run CalculatePBNResults_Streamlit.py
 
 import streamlit as st
+import streamlit_chat
 from streamlit_extras.bottom_container import bottom
+from stqdm import stqdm
+
 import pathlib
 import fsspec
 import polars as pd # used for __version__ only
@@ -70,7 +73,7 @@ def display_experiments(df):
             g = df.group_by([d[0],d[1],'Room'])
             for k,v in g:
                 st.caption(f"Summarize {k[2]} {d} ({k[0]}-{k[1]}) ParScore_Diff_{d}")
-                sql_query = f"SUMMARIZE SELECT ParScore_Diff_{d}, DDTricks_Diff, EV_MaxScore_Diff_{d} FROM df WHERE Room='{k[2]}'" # DDTicks is directionally invariant
+                sql_query = f"SUMMARIZE SELECT ParScore_Diff_{d}, DDTricks_Diff, EV_MaxScore_Diff_{d} FROM self WHERE Room='{k[2]}'" # DDTicks is directionally invariant
                 ShowDataFrameTable(df, query=sql_query, key=f"display_experiments_{d+'_'.join(k)}_summarize_key")
 
         # # sum over Par_Diff_NS for all, bencam22, wbridge5
@@ -118,21 +121,42 @@ def display_experiments(df):
         # st.write(f"Frequency where exceeding ExpMaxScore_Diff_NS: All:{all} Open:{open} Closed:{closed} Open-Closed:{open-closed}")
 
 
-def ShowDataFrameTable(df, key, query='SELECT * FROM df', show_sql_query=True):
+def ShowDataFrameTable(df, key, query='SELECT * FROM self', show_sql_query=True):
     if show_sql_query and st.session_state.show_sql_query:
         st.text(f"SQL Query: {query}")
+
+    # if query doesn't contain 'FROM self', add 'FROM self ' to the beginning of the query.
+    # can't just check for startswith 'from self'. Not universal because 'from self' can appear in subqueries or after JOIN.
+    # this syntax makes easy work of adding FROM but isn't compatible with polars SQL. duckdb only.
+    if 'from self' not in query.lower():
+        query = 'FROM self ' + query
+
+    # polars SQL has so many issues that it's impossible to use. disabling until 2030.
+    # try:
+    #     # First try using Polars SQL. However, Polars doesn't support some SQL functions: string_agg(), agg_value(), some joins are not supported.
+    #     if True: # workaround issued by polars. CASE WHEN AVG() ELSE AVG() -> AVG(CASE WHEN ...)
+    #         result_df = st.session_state.con.execute(query).pl()
+    #     else:
+    #         result_df = df.sql(query) # todo: enforce FROM self for security concerns?
+    # except Exception as e:
+    #     try:
+    #         # If Polars fails, try DuckDB
+    #         print(f"Polars SQL failed. Trying DuckDB: {e}")
+    #         result_df = st.session_state.con.execute(query).pl()
+    #     except Exception as e2:
+    #         st.error(f"Both Polars and DuckDB SQL engines have failed. Polars error: {e}, DuckDB error: {e2}. Query: {query}")
+    #         return None
+    
     try:
-        # todo: could implement duckdb.execute(query) to implement multiple statements. duckdb.sql(query) only works for one select statements.
-        df = duckdb.sql(query).pl()
+        result_df = st.session_state.con.execute(query).pl()
+        if show_sql_query and st.session_state.show_sql_query:
+            st.text(f"Result is a dataframe of {len(result_df)} rows.")
+        streamlitlib.ShowDataFrameTable(result_df, key) # requires pandas dataframe.
     except Exception as e:
-        st.error(f"Invalid SQL Query: {query} {e}")
-        return True
-    try:
-        streamlitlib.ShowDataFrameTable(df, key)
-    except Exception as e:
-        st.error(f"Invalid SQL Query on Dataframe: {query} {e}")
-        return True
-    return False
+        st.error(f"duckdb exception: error:{e} query:{query}")
+        return None
+    
+    return result_df
 
 
 def app_info():
@@ -325,6 +349,7 @@ def LoadPage():
     return
 
 
+# todo: implement stqdm progress bar
 def Process_PBN(path_url,boards,df,everything_df,hrs_d={}):
     with st.spinner("Converting PBN to Endplay Dataframe ..."):
         df = mlBridgeEndplayLib.endplay_boards_to_df({path_url:boards})
@@ -350,9 +375,6 @@ def Process_PBN(path_url,boards,df,everything_df,hrs_d={}):
         df = mlBridgeAugmentLib.Perform_DD_SD_Augmentations(df)
         #st.write("After Perform_DD_SD_Augmentations")
         #ShowDataFrameTable(df, key=f"Perform_DD_SD_Augmentations_key")
-
-    # show completed dataframe. Limit columns to, say 1000, to avoid overwhelming the dataframe rendering UI.
-    ShowDataFrameTable(df, query='SELECT PBN, Hand_N, Suit_N_S, Contract, Result, Score_NS, ParScore_NS, ParScore_Diff_NS, EV_NS_Max, EV_NS_MaxCol, EV_MaxScore_Diff_NS FROM df', key=f"Show_Sample_Dataframe_key")
 
     # if save_intermediate_files:
     #     # save df as pickle because it contains object columns. later, they're dropped when creating pbn_df.
@@ -387,6 +409,69 @@ def Process_PBN(path_url,boards,df,everything_df,hrs_d={}):
     st.session_state.df = df
 
 
+def filter_dataframe(df, group_id, session_id, player_id, partner_id):
+    # First filter for sessions containing player_id
+
+    df = df.filter(
+        pl.col('group_id').eq(group_id) &
+        pl.col('session_id').eq(session_id)
+    )
+    
+    # Set direction variables based on where player_id is found
+    player_direction = None
+    if player_id in df['Player_ID_N']:
+        player_direction = 'N'
+        partner_direction = 'S'
+        pair_direction = 'NS'
+        opponent_pair_direction = 'EW'
+    elif player_id in df['Player_ID_E']:
+        player_direction = 'E'
+        partner_direction = 'W'
+        pair_direction = 'EW'
+        opponent_pair_direction = 'NS'
+    elif player_id in df['Player_ID_S']:
+        player_direction = 'S'
+        partner_direction = 'N'
+        pair_direction = 'NS'
+        opponent_pair_direction = 'EW'
+    elif player_id in df['Player_ID_W']:
+        player_direction = 'W'
+        partner_direction = 'E'
+        pair_direction = 'EW'
+        opponent_pair_direction = 'NS'
+
+    # todo: not sure what to do here. pbns might not contain names or ids. endplay has names but not ids.
+    if player_direction is None:
+        df = df.with_columns(
+            pl.lit(True).alias('Boards_I_Played'), # player_id could be numeric
+            pl.lit(True).alias('Boards_I_Declared'), # player_id could be numeric
+            pl.lit(True).alias('Boards_Partner_Declared'), # partner_id could be numeric
+        )
+    else:
+        # Store in session state
+        st.session_state.player_direction = player_direction
+        st.session_state.partner_direction = partner_direction
+        st.session_state.pair_direction = pair_direction
+        st.session_state.opponent_pair_direction = opponent_pair_direction
+
+        # Columns used for filtering to a specific player_id and partner_id. Needs multiple with_columns() to unnest overlapping columns.
+        df = df.with_columns(
+            pl.col(f'Player_ID_{player_direction}').eq(pl.lit(str(player_id))).alias('Boards_I_Played'), # player_id could be numeric
+            pl.col('Declarer_ID').eq(pl.lit(str(player_id))).alias('Boards_I_Declared'), # player_id could be numeric
+            pl.col('Declarer_ID').eq(pl.lit(str(partner_id))).alias('Boards_Partner_Declared'), # partner_id could be numeric
+        )
+    df = df.with_columns(
+        pl.col('Boards_I_Played').alias('Boards_We_Played'),
+        pl.col('Boards_I_Played').alias('Our_Boards'),
+        (pl.col('Boards_I_Declared') | pl.col('Boards_Partner_Declared')).alias('Boards_We_Declared'),
+    )
+    df = df.with_columns(
+        (pl.col('Boards_I_Played') & ~pl.col('Boards_We_Declared') & pl.col('Contract').ne('PASS')).alias('Boards_Opponent_Declared'),
+    )
+
+    return df
+
+
 def create_sidebar():
     st.sidebar.caption('Build:'+app_datetime)
 
@@ -408,8 +493,75 @@ def create_sidebar():
 
     st.session_state.single_dummy_sample_count = st.sidebar.number_input('Single Dummy Sample Count',value=single_dummy_sample_count_default,key='create_sidebar_single_dummy_sample_count_key',on_change=sample_count_on_change,min_value=1,max_value=1000,step=1,help='Number of random deals to generate for calculating single dummy probabilities. Larger number (10 to 30) is more accurate but slower. Use 1 to 5 for fast, less accurate results.')
 
-    # SELECT Board, Vul, ParContract, ParScore_NS, Custom_ParContract FROM df
+    # SELECT Board, Vul, ParContract, ParScore_NS, Custom_ParContract FROM self
     st.sidebar.checkbox('Show SQL Query',value=show_sql_query_default,key='create_sidebar_show_sql_query_checkbox_key',on_change=sql_query_on_change,help='Show SQL used to query dataframes.')
+
+
+def read_favorites():
+
+    if st.session_state.default_favorites_file.exists():
+        with open(st.session_state.default_favorites_file, 'r') as f:
+            favorites = json.load(f)
+            st.session_state.favorites = favorites
+
+    if st.session_state.player_id_custom_favorites_file.exists():
+        with open(st.session_state.player_id_custom_favorites_file, 'r') as f:
+            player_id_favorites = json.load(f)
+            st.session_state.player_id_favorites = player_id_favorites
+
+    if st.session_state.debug_favorites_file.exists():
+        with open(st.session_state.debug_favorites_file, 'r') as f:
+            debug_favorites = json.load(f)
+            st.session_state.debug_favorites = debug_favorites
+
+
+def load_vetted_prompts(json_file):
+
+    sql_queries = []
+    if json_file.exists():
+        with open(json_file) as f:
+            json_data = json.load(f)
+        
+        # Navigate the JSON path to get the appropriate list of prompts
+        vetted_prompts = [json_data['SelectBoxes']['Vetted_Prompts'][p[1:]] for p in json_data["Buttons"]['Summarize']['prompts']]
+    
+    return vetted_prompts
+
+
+def process_prompt_macros(sql_query):
+    replacements = {
+        '{Player_Direction}': st.session_state.player_direction,
+        '{Partner_Direction}': st.session_state.partner_direction,
+        '{Pair_Direction}': st.session_state.pair_direction,
+        '{Opponent_Pair_Direction}': st.session_state.opponent_pair_direction
+    }
+    for old, new in replacements.items():
+        sql_query = sql_query.replace(old, new)
+    return sql_query
+
+
+def show_dfs(vetted_prompts, pdf_assets):
+    sql_query_count = 0
+
+    # bar_format='{l_bar}{bar}' isn't working in stqdm. no way to suppress r_bar without editing stqdm source code.
+    for category in stqdm(list(vetted_prompts), desc='Morty is analyzing your game...', bar_format='{l_bar}{bar}'): #[:-3]:
+        #print('category:',category)
+        if "prompts" in category:
+            for i,prompt in enumerate(category["prompts"]):
+                #print('prompt:',prompt) 
+                if "sql" in prompt and prompt["sql"]:
+                    if i == 0:
+                        streamlit_chat.message(f"Morty: {category['help']}", key=f'morty_sql_query_{sql_query_count}', logo=st.session_state.assistant_logo)
+                        pdf_assets.append(f"## {category['help']}")
+                    #print('sql:',prompt["sql"])
+                    prompt_sql = prompt['sql']
+                    sql_query = process_prompt_macros(prompt_sql)
+                    query_df = ShowDataFrameTable(st.session_state.df, query=sql_query, key=f'sql_query_{sql_query_count}')
+                    if query_df is not None:
+                        pdf_assets.append(query_df)
+                    sql_query_count += 1
+                    #break
+        #break
 
 
 if __name__ == '__main__':
@@ -420,6 +572,12 @@ if __name__ == '__main__':
         st.set_page_config(layout="wide")
         streamlitlib.widen_scrollbars()
 
+        st.session_state.assistant_logo = 'https://github.com/BSalita/Bridge_Game_Postmortem_Chatbot/blob/main/assets/logo_assistant.gif?raw=true' # 🥸 todo: put into config. must have raw=true for github url.
+        st.session_state.guru_logo = 'https://github.com/BSalita/Bridge_Game_Postmortem_Chatbot/blob/main/assets/logo_guru.png?raw=true' # 🥷todo: put into config file. must have raw=true for github url.
+
+        # Create connection
+        st.session_state.con = duckdb.connect()
+
     # Refreshable defaults
     app_datetime = datetime.fromtimestamp(pathlib.Path(__file__).stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
     #pbn_filename_default = 'DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'  # local filename
@@ -429,16 +587,92 @@ if __name__ == '__main__':
     st.session_state.show_sql_query = show_sql_query_default
     save_intermediate_files = False # leave False for now. saving intermediate files presents problems with persistance. where to do it? how to clean up? how to handle multiple users?
     recommended_board_max = 10000
+    
+    st.session_state.group_id_default = 0 # numeric or string?
+    st.session_state.session_id_default = 0 # numeric or string?
+    st.session_state.pair_id_default = None
+    st.session_state.player_id_default = 0 # numeric or string?
+    st.session_state.partner_id_default = None # numeric or string?
+    st.session_state.player_direction_default = 'N'
+    st.session_state.partner_direction_default = 'S'
+    st.session_state.pair_direction_default = 'NS'
+    st.session_state.opponent_pair_direction_default = 'EW'
+    st.session_state.game_url_default = None
+    st.session_state.game_date_default = 'Unknown date' #pd.to_datetime(st.session_state.df['Date'].iloc[0]).strftime('%Y-%m-%d')
 
-    create_sidebar()
+    st.session_state.group_id = st.session_state.group_id_default
+    st.session_state.session_id = st.session_state.session_id_default
+    st.session_state.pair_id = st.session_state.pair_id_default
+    st.session_state.player_id = st.session_state.player_id_default
+    st.session_state.partner_id = st.session_state.partner_id_default
+    st.session_state.player_direction = st.session_state.player_direction_default
+    st.session_state.partner_direction = st.session_state.partner_direction_default
+    st.session_state.pair_direction = st.session_state.pair_direction_default
+    st.session_state.opponent_pair_direction = st.session_state.opponent_pair_direction_default
+    st.session_state.game_url = st.session_state.game_url_default
+    st.session_state.game_date = st.session_state.game_date_default
+    st.session_state.use_historical_data = False # use historical data from file or get from url
 
-    if 'df' not in st.session_state:
-        st.title("PBN Statistics Generator and Query Engine")
-        app_info()
-        st.info("*Start by entering a URL and clicking the :green-background[Go] button on the left sidebar.* The process takes 1 to 2 minutes to complete. When the running man in the top right corner stops, the data is ready for query.")
+    st.session_state.default_sql_query = "SELECT PBN, Hand_N, Suit_N_S, Board, Contract, Result, Tricks, Score_NS, DDScore_NS, ParScore_NS, ParScore_Diff_NS, EV_NS_Max, EV_NS_MaxCol, EV_MaxScore_Diff_NS FROM self"
+
+    if 'df' in st.session_state:
+        create_sidebar()
     else:
-        default_sql_query = f"SELECT PBN, Hand_N, Suit_N_S, Contract, Result, Score_NS, ParScore_NS, ParScore_Diff_NS, EV_NS_Max, EV_NS_MaxCol, EV_MaxScore_Diff_NS FROM df"
-        with bottom():
-            st.caption(f"Enter a SQL query in the box below. e.g. {default_sql_query}")
-            st.chat_input('Enter a SQL query', key='main_prompt_chat_input_key', on_submit=chat_input_on_submit)
+
+        create_sidebar()
+        LoadPage()
+
+        # personalize to player, partner, opponents, etc.
+        st.session_state.df = filter_dataframe(st.session_state.df, st.session_state.group_id, st.session_state.session_id, st.session_state.player_id, st.session_state.partner_id)
+
+        # Register DataFrame as 'results' view
+        st.session_state.con.register('self', st.session_state.df)
+
+        # ShowDataFrameTable(df, key='everything_df_key', query='SELECT Board, Pct_NS, Pct_EW, MP_NS, MP_EW FROM self')
+
+        st.session_state.default_favorites_file = pathlib.Path(
+            'default.favorites.json')
+        st.session_state.player_id_custom_favorites_file = pathlib.Path(
+            f'favorites/{st.session_state.player_id}.favorites.json')
+        st.session_state.debug_favorites_file = pathlib.Path(
+            'favorites/debug.favorites.json')
+        read_favorites()
+
+        # pdf_assets = []
+        #pdf_assets.append(f"# Bridge Game Postmortem Report Personalized for {st.session_state.player_id}")
+        #pdf_assets.append(f"### Created by https://ffbridge.postmortem.chat")
+        #pdf_assets.append(f"## Game Date:? Session:{st.session_state.session_id} Player:{st.session_state.player_id} Partner:{st.session_state.partner_id}")
+
+        # st.session_state.vetted_prompts = load_vetted_prompts(st.session_state.default_favorites_file)
+
+        # with st.container(border=True):
+            # st.markdown('### Your Personalized Report')
+            # st.text(f'Game Date:? Session:{st.session_state.session_id} Player:{st.session_state.player_id} Partner:{st.session_state.partner_id}')
+            # show_dfs(st.session_state.vetted_prompts, pdf_assets)
+
+            # # As a text link
+            # #st.markdown('[Back to Top](#your-personalized-report)')
+
+            # # As an html button (needs styling added)
+            # # can't use link_button() restarts page rendering. markdown() will correctly jump to href.
+            # # st.link_button('Go to top of report',url='#your-personalized-report')
+            # st.markdown(''' <a target="_self" href="#your-personalized-report">
+            #                     <button>
+            #                         Go to top of report
+            #                     </button>
+            #                 </a>''', unsafe_allow_html=True)
+
+        # if st.sidebar.download_button(label="Download Personalized Report",
+        #         data=streamlitlib.create_pdf(pdf_assets, title=f"Bridge Game Postmortem Report Personalized for {st.session_state.player_id}"),
+        #         file_name = f"{st.session_state.session_id}-{st.session_state.player_id}-morty.pdf",
+        #         mime='application/octet-stream'):
+        #     st.warning('Personalized report downloaded.')
+
+        ShowDataFrameTable(st.session_state.df, query=st.session_state.default_sql_query, key='show_default_query_key')
+
+    if st.session_state.show_sql_query:
+        with st.container():
+            with bottom():
+                st.caption(f"Enter a SQL query in the box below. e.g. {st.session_state.default_sql_query}")
+                st.chat_input('Enter a SQL query', key='main_prompt_chat_input_key', on_submit=chat_input_on_submit)
 

@@ -546,11 +546,25 @@ def perform_hand_augmentations(df,hrs_d,sd_productions=40,progress=None):
     # todo: refactor all of these df ops into separate functions.
 
     t = time.time()
+    if 'group_id' not in df.columns:
+        df = df.with_columns(
+            pl.lit(0).alias('group_id')
+        )
+    print(f"create group_id: time:{time.time()-t} seconds")
+
+    t = time.time()
     if 'session_id' not in df.columns:
         df = df.with_columns(
-            pl.lit(None).alias('session_id')
+            pl.lit(0).alias('session_id')
         )
     print(f"create session_id: time:{time.time()-t} seconds")
+
+    t = time.time()
+    if 'section_name' not in df.columns:
+        df = df.with_columns(
+            pl.lit('').alias('section_name')
+        )
+    print(f"create section_name: time:{time.time()-t} seconds")
 
     t = time.time()
     df = create_hand_nesw_columns(df)
@@ -621,10 +635,11 @@ def perform_hand_augmentations(df,hrs_d,sd_productions=40,progress=None):
     print(f"create_contract_types: time:{time.time()-t} seconds")
 
     t = time.time()
-    # todo: replace dicts with generic direction conversion
-    declarer_to_LHO_d = {'N':'E','E':'S','S':'W','W':'N'}
-    declarer_to_dummy_d = {'N':'S','E':'W','S':'N','W':'E'}
-    declarer_to_RHO_d = {'N':'W','E':'N','S':'E','W':'S'}
+    # todo: replace dicts with generic direction conversion?
+    # ACBL assigns Declarer_Direction of 'N' if PASS. We've changed it to None above.
+    declarer_to_LHO_d = {None:None,'N':'E','E':'S','S':'W','W':'N'}
+    declarer_to_dummy_d = {None:None,'N':'S','E':'W','S':'N','W':'E'}
+    declarer_to_RHO_d = {None:None,'N':'W','E':'N','S':'E','W':'S'}
     df = df.with_columns(
         pl.col('Declarer_Direction').replace_strict(declarer_to_LHO_d).alias('LHO_Direction'),
         pl.col('Declarer_Direction').replace_strict(declarer_to_dummy_d).alias('Dummy_Direction'),
@@ -640,7 +655,7 @@ def perform_hand_augmentations(df,hrs_d,sd_productions=40,progress=None):
 
     t = time.time()
     df = df.with_columns(
-        pl.Series('Declarer_ID',convert_declarer_to_DeclarerID(df),pl.UInt32,strict=False), # can have nulls or UInt32
+        pl.Series('Declarer_ID',convert_declarer_to_DeclarerID(df),pl.String,strict=False), # can have nulls. endplay has no numeric ids
     )
     print(f"convert_declarer_to_DeclarerID: time:{time.time()-t} seconds")
 
@@ -857,42 +872,47 @@ def PerformMatchPointAndPercentAugmentations(df):
     # todo: probably wrong test. 
     t = time.time()
 
-    if 'MP_NS' in df.columns and 'MP_EW' in df.columns and 'MP_Top' in df.columns:
-        print('PerformMatchPointAndPercentAugmentations: MP_NS, MP_EW, MP_Top exist but code is not implemented to use them. skipping.')
-        return df
+    #if 'MP_NS' in df.columns and 'MP_EW' in df.columns and 'MP_Top' in df.columns:
+    #    print('PerformMatchPointAndPercentAugmentations: MP_NS, MP_EW, MP_Top exist but code is not implemented to use them. skipping.')
+    #    return df
 
     if 'Expanded_Scores_List' not in df.columns:
-        print('PerformMatchPointAndPercentAugmentations: Expanded_Scores_List not found. skipping.')
-        return df
-    else:
-        discrete_score_columns = ['DDScore_NS','ParScore_NS','EV_NS_Max'] # todo: EV needs {Vul} replacement. Use NV for now.'
-        dd_score_columns = [f'DDScore_{l}{s}_{d}' for d in 'NESW' for s in 'SHDCN' for l in range(1,8)]
-        # EV_{pd}_{dd}_{s}_[1-7]_{v}
-        ev_score_columns = [f'EV_{pd}_{d}_{s}_{l}' for pd in ['NS','EW'] for d in pd for s in 'SHDCN' for l in range(1,8)]
-        df = calculate_matchpoint_scores_ns(df,discrete_score_columns+dd_score_columns+ev_score_columns)
+        print('PerformMatchPointAndPercentAugmentations: Creating Expanded_Scores_List column.')
+        expanded_scores_df = df.group_by('Board').agg(pl.col('Score_NS').sort(descending=True).alias('Expanded_Scores_List'))
+        # Join the expanded scores back to the original DataFrame
+        df = df.join(expanded_scores_df, on='Board')
+        
+    discrete_score_columns = ['DDScore_NS','ParScore_NS','EV_NS_Max'] # todo: EV needs {Vul} replacement. Use NV for now.'
+    dd_score_columns = [f'DDScore_{l}{s}_{d}' for d in 'NESW' for s in 'SHDCN' for l in range(1,8)]
+    # EV_{pd}_{dd}_{s}_[1-7]_{v}
+    ev_score_columns = [f'EV_{pd}_{d}_{s}_{l}' for pd in ['NS','EW'] for d in pd for s in 'SHDCN' for l in range(1,8)]
+    df = calculate_matchpoint_scores_ns(df,discrete_score_columns+dd_score_columns+ev_score_columns)
 
-        for col_ns in discrete_score_columns:
-            col_ew = col_ns.replace('NS','EW')
-            df = df.with_columns(
-                (pl.col('MP_Top')-pl.col(f'MP_{col_ns}')).alias(f'MP_{col_ew}')
-            )
-            df = df.with_columns(
-                (pl.col(f'MP_{col_ns}')/pl.col('MP_Top')).alias(col_ns.replace('_NS','_Pct_NS')),
-                (pl.col(f'MP_{col_ew}')/pl.col('MP_Top')).alias(col_ew.replace('_EW','_Pct_EW')),
-            )
+    for col_ns in discrete_score_columns:
+        col_ew = col_ns.replace('NS','EW')
+        df = df.with_columns(
+            (pl.col('MP_Top')-pl.col(f'MP_{col_ns}')).alias(f'MP_{col_ew}')
+        )
+        df = df.with_columns(
+            (pl.col(f'MP_{col_ns}')/pl.col('MP_Top')).alias(col_ns.replace('_NS','_Pct_NS')),
+            (pl.col(f'MP_{col_ew}')/pl.col('MP_Top')).alias(col_ew.replace('_EW','_Pct_EW')),
+        )
 
-        df = df.with_columns([
-            pl.max_horizontal(f'^MP_DDScore_[1-7][SHDCN]_[NS]$').alias(f'MP_DDScore_NS_Max'),
-        ])
-        df = df.with_columns([
-            pl.max_horizontal(f'^MP_DDScore_[1-7][SHDCN]_[EW]$').alias(f'MP_DDScore_EW_Max'),
-        ])
-        df = df.with_columns([
-            pl.max_horizontal(f'^MP_EV_NS_[NS]_[SHDCN]_[1-7]$').alias(f'MP_EV_NS_Max'),
-        ])
-        df = df.with_columns([
-            pl.max_horizontal(f'^MP_EV_EW_[EW]_[SHDCN]_[1-7]$').alias(f'MP_EV_EW_Max'),
-        ])
+    df = df.with_columns([
+        (1-pl.col('ParScore_Pct_NS')).alias('ParScore_Pct_EW'),
+    ])
+    df = df.with_columns([
+        pl.max_horizontal(f'^MP_DDScore_[1-7][SHDCN]_[NS]$').alias(f'MP_DDScore_NS_Max'),
+    ])
+    df = df.with_columns([
+        pl.max_horizontal(f'^MP_DDScore_[1-7][SHDCN]_[EW]$').alias(f'MP_DDScore_EW_Max'),
+    ])
+    df = df.with_columns([
+        pl.max_horizontal(f'^MP_EV_NS_[NS]_[SHDCN]_[1-7]$').alias(f'MP_EV_NS_Max'),
+    ])
+    df = df.with_columns([
+        pl.max_horizontal(f'^MP_EV_EW_[EW]_[SHDCN]_[1-7]$').alias(f'MP_EV_EW_Max'),
+    ])
 
     df = df.with_columns([
         (pl.col('MP_DDScore_NS_Max')/pl.col('MP_Top')).alias('DDScore_Pct_NS_Max'),
@@ -916,9 +936,9 @@ def PerformMatchPointAndPercentAugmentations(df):
         (pl.col('EV_Pct_NS_Max')-pl.col('Pct_NS')).alias('SDPct_Max_Diff_NS'),
         (pl.col('EV_Pct_EW_Max')-pl.col('Pct_EW')).alias('SDPct_Max_Diff_EW'),
         (pl.col('ParScore_Pct_NS')-pl.col('Pct_NS')).alias('SDParScore_Pct_Diff_NS'),
-        (1-pl.col('ParScore_Pct_NS')-pl.col('Pct_EW')).alias('SDParScore_Pct_Diff_EW'),
+        (pl.col('ParScore_Pct_EW')-pl.col('Pct_EW')).alias('SDParScore_Pct_Diff_EW'),
         (pl.col('ParScore_Pct_NS')-pl.col('Pct_NS')).alias('SDParScore_Pct_Max_Diff_NS'),
-        (1-pl.col('ParScore_Pct_NS')-pl.col('Pct_EW')).alias('SDParScore_Pct_Max_Diff_EW'),
+        (pl.col('ParScore_Pct_EW')-pl.col('Pct_EW')).alias('SDParScore_Pct_Max_Diff_EW'),
         ])
 
     # test sql query: FROM self SELECT Board, Contract, Score, Score_NS, Score_EW, ParScore_NS, Expanded_Scores_List, MP_NS, MP_EW, MP_ParScore_NS, MP_ParScore_EW, ParScore_Pct_NS, ParScore_Pct_EW, DDScore_3N_N, MP_DDScore_3N_N, MP_DDScore_NS, MP_DDScore_EW, MP_EV_NS, MP_EV_EW, DDScore_Pct_NS, DDScore_Pct_EW, EV_NS_NV_Max, EV_EW_NV_MaxMP_EV_NS, MP_EV_EW, EV_Pct_NS, EV_Pct_EW, EV_NS_N_H_4_NV, EV_EW_E_H_4_NV
