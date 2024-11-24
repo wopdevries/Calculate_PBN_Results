@@ -217,8 +217,8 @@ def convert_endplay_df_to_mlBridge_df(df):
         pl.Series('Player_ID_E',df['Player_E'],pl.String), # todo: fake player id
         pl.Series('Player_ID_S',df['Player_S'],pl.String), # todo: fake player id
         pl.Series('Player_ID_W',df['Player_W'],pl.String), # todo: fake player id
-        pl.Series('Pair_Number_NS',pl.lit(0),pl.String), # todo: fake Pair_Number_NS
-        pl.Series('Pair_Number_EW',pl.lit(0),pl.String), # todo: fake Pair_Number_EW
+        pl.lit(0).cast(pl.UInt32).alias('Pair_Number_NS'), # todo: fake Pair_Number_NS
+        pl.lit(0).cast(pl.UInt32).alias('Pair_Number_EW'), # todo: fake Pair_Number_EW
         pl.Series('source_file',df['source_file'],pl.String),
         pl.Series('bid_type',df['bid_type'],pl.List(pl.String)),# categorical?
         pl.Series('bid_denom',df['bid_denom'],pl.List(pl.String)),# categorical? #.replace(denom_to_SHDCN_d)
