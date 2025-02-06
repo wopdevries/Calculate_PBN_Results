@@ -30,6 +30,7 @@ import streamlitlib
 #import mlBridgeLib
 import mlBridgeAugmentLib
 import mlBridgeEndplayLib
+import mlBridgeBiddingLib
 
 
 # def create_augmented_df(df):
@@ -125,10 +126,10 @@ def ShowDataFrameTable(df, key, query='SELECT * FROM self', show_sql_query=True)
     if show_sql_query and st.session_state.show_sql_query:
         st.text(f"SQL Query: {query}")
 
-    # if query doesn't contain 'FROM self', add 'FROM self ' to the beginning of the query.
+    # if query doesn't contain 'FROM ', add 'FROM self ' to the beginning of the query. issue is for non-self tables such as exploded_auctions_df.
     # can't just check for startswith 'from self'. Not universal because 'from self' can appear in subqueries or after JOIN.
     # this syntax makes easy work of adding FROM but isn't compatible with polars SQL. duckdb only.
-    if 'from self' not in query.lower():
+    if 'from ' not in query.lower():
         query = 'FROM self ' + query
 
     # polars SQL has so many issues that it's impossible to use. disabling until 2030.
@@ -375,6 +376,16 @@ def Process_PBN(path_url,boards,df,everything_df,hrs_d={}):
         df = mlBridgeAugmentLib.Perform_DD_SD_Augmentations(df)
         #st.write("After Perform_DD_SD_Augmentations")
         #ShowDataFrameTable(df, key=f"Perform_DD_SD_Augmentations_key")
+    with st.spinner("Creating Bidding Tables. Very slow. Takes 12 minutes ..."): # todo: make faster. update message.
+        expression_evaluator = mlBridgeBiddingLib.ExpressionEvaluator()
+        df = expression_evaluator.create_bidding_table_df(df,st.session_state.bt_prior_bids_to_bt_entry_d)
+    with st.spinner("Creating Ai Auctions ..."):
+        finder = mlBridgeBiddingLib.AuctionFinder(st.session_state.bt_prior_bids_to_bt_entry_d,st.session_state.bt_bid_to_next_bids_d,st.session_state.exprStr_to_exprID_d)
+        st.session_state.exprs_dfs_d = finder.augment_df_with_bidding_info(df)
+        assert len(st.session_state.exprs_dfs_d) == len(df)
+        for k,expr_df in st.session_state.exprs_dfs_d.items():
+            print(k,expr_df)
+            break
 
     # if save_intermediate_files:
     #     # save df as pickle because it contains object columns. later, they're dropped when creating pbn_df.
@@ -480,7 +491,8 @@ def create_sidebar():
     #default_url = 'file://c:/sw/bridge/ML-Contract-Bridge/src/Calculate_PBN_Results/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
     #default_url = r'file://c:\sw/bridge\ML-Contract-Bridge\src\Calculate_PBN_Results/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
     #default_url = r'file://DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
-    default_url = 'https://raw.githubusercontent.com/BSalita/Calculate_PBN_Results/master/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
+    #default_url = 'https://raw.githubusercontent.com/BSalita/Calculate_PBN_Results/master/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
+    default_url = '3494191054-1682343601-bsalita.lin'
     #default_url = 'GIB-Thorvald-8638-2024-08-23.pbn'
     st.sidebar.text_input('Enter URL:', default_url, on_change=LoadPage, key='create_sidebar_text_input_url_key', help='Enter a URL or pathless local file name.') # , on_change=LoadPage
     # using css to change button color for the entire button width. The color was choosen to match the the restrictive text colorizer (:green-background[Go]) used in st.info() below.
@@ -577,6 +589,29 @@ if __name__ == '__main__':
 
         # Create connection
         st.session_state.con = duckdb.connect()
+    
+        rootPath = pathlib.Path('e:/bridge/data')
+        acblPath = rootPath.joinpath('acbl')
+        bboPath = rootPath.joinpath('bbo')
+        dataPath = bboPath.joinpath('data')
+    
+        # takes 10s
+        bbo_eval_bidding_tables_d_filename = 'bbo_eval_bidding_tables_d.pkl'
+        bbo_eval_bidding_tables_d_file = dataPath.joinpath(bbo_eval_bidding_tables_d_filename)
+        with open(bbo_eval_bidding_tables_d_file, 'rb') as f:
+            st.session_state.bt_prior_bids_to_bt_entry_d, st.session_state.bt_bid_to_next_bids_d = pickle.load(f)
+        print(f"Loaded {bbo_eval_bidding_tables_d_filename}: size:{bbo_eval_bidding_tables_d_file.stat().st_size}")
+
+        # takes 1s per 1m rows.
+        # todo: evaluated_expressions_d is probably obsolete as its concatenated into train_df.
+        bbo_eval_bidding_tables_d_filename = 'bbo_bidding_tables_dicts.pkl'
+        bbo_eval_bidding_tables_d_file = dataPath.joinpath(bbo_eval_bidding_tables_d_filename)
+        with open(bbo_eval_bidding_tables_d_file, 'rb') as f:
+            #evaluated_expressions_d, exprStr_to_exprID_d = pickle.load(f)
+            _, st.session_state.exprStr_to_exprID_d = pickle.load(f)
+        print(f"Loaded {bbo_eval_bidding_tables_d_filename}: size:{bbo_eval_bidding_tables_d_file.stat().st_size}")
+        #print(f"{len(evaluated_expressions_d)=} {len(exprStr_to_exprID_d)=}")
+        print(f"{len(st.session_state.exprStr_to_exprID_d)=}")
 
     # Refreshable defaults
     app_datetime = datetime.fromtimestamp(pathlib.Path(__file__).stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
@@ -668,7 +703,19 @@ if __name__ == '__main__':
         #         mime='application/octet-stream'):
         #     st.warning('Personalized report downloaded.')
 
+            # Register DataFrame as 'results' view
+        st.session_state.con.register('self', st.session_state.df)
         ShowDataFrameTable(st.session_state.df, query=st.session_state.default_sql_query, key='show_default_query_key')
+
+        for i,(k,auctions_df) in enumerate(st.session_state.exprs_dfs_d.items()):
+            print(i,k,auctions_df)
+            if i >= 10:
+                break
+            ShowDataFrameTable(auctions_df, query='SELECT DISTINCT index, Board, PBN, Dealer, Vul FROM auctions_df', key=f'show_distinct_key_{k}')
+            ShowDataFrameTable(auctions_df, query='SELECT * EXCLUDE (Board, PBN, Dealer, Vul) FROM auctions_df', key=f'show_exclude_distincts_key_{k}')
+            exploded_auctions_df = auctions_df.explode(['criteria_str','criteria_col','criteria_values'])
+            ShowDataFrameTable(exploded_auctions_df, query='SELECT DISTINCT index, Board, PBN, Dealer, Vul FROM exploded_auctions_df', key=f'show_distinct_exploded_auctions_key_{k}')
+            ShowDataFrameTable(exploded_auctions_df, query='SELECT * EXCLUDE (Board, PBN, Dealer, Vul) FROM exploded_auctions_df', key=f'show_exclude_distincts_exploded_auctions_key_{k}')
 
     if st.session_state.show_sql_query:
         with st.container():
