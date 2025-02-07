@@ -594,10 +594,11 @@ if __name__ == '__main__':
         acblPath = rootPath.joinpath('acbl')
         bboPath = rootPath.joinpath('bbo')
         dataPath = bboPath.joinpath('data')
-    
-        # takes 10s
+        biddingPath = bboPath.joinpath('bidding')
+
+        # takes 10m
         bbo_eval_bidding_tables_d_filename = 'bbo_eval_bidding_tables_d.pkl'
-        bbo_eval_bidding_tables_d_file = dataPath.joinpath(bbo_eval_bidding_tables_d_filename)
+        bbo_eval_bidding_tables_d_file = biddingPath.joinpath(bbo_eval_bidding_tables_d_filename)
         with open(bbo_eval_bidding_tables_d_file, 'rb') as f:
             st.session_state.bt_prior_bids_to_bt_entry_d, st.session_state.bt_bid_to_next_bids_d = pickle.load(f)
         print(f"Loaded {bbo_eval_bidding_tables_d_filename}: size:{bbo_eval_bidding_tables_d_file.stat().st_size}")
