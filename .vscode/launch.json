@@ -12,8 +12,6 @@
                 "args": [
                     "run",
                     "CalculatePBNResults_Streamlit.py", // "${file}"
-                    "--server.port",
-                    "8501"
                 ],
                 "console": "integratedTerminal",
                 "justMyCode": false

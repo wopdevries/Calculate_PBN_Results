@@ -6,6 +6,7 @@ import streamlit as st
 import streamlit_chat
 from streamlit_extras.bottom_container import bottom
 from stqdm import stqdm
+from st_aggrid import AgGrid
 
 import pathlib
 import fsspec
@@ -350,42 +351,76 @@ def LoadPage():
     return
 
 
+import threading
+import time
+
+@st.cache_resource
+def safe_resource():
+    return threading.Lock()
+
+
+def perform_hand_augmentations(df):
+    # Create an empty placeholder for status messages
+    status_placeholder = st.empty()
+
+    acquired = False
+    mutex = safe_resource()
+    while not acquired:
+        acquired = mutex.acquire(timeout=2)
+        if not acquired:
+            status_placeholder.info("Hand analysis is queued for processing. Please wait...")
+            time.sleep(1)
+    try:
+        status_placeholder.empty()
+        progress = st.progress(0) # pass progress bar to augmenter to show progress of long running operations
+        augmenter = mlBridgeAugmentLib.HandAugmenter(df,{},sd_productions=st.session_state.single_dummy_sample_count,progress=progress)
+        df = augmenter.perform_hand_augmentations()
+    finally:
+        mutex.release()
+
+    return df
+
+
+def augment_df(df):
+    with st.spinner('Creating ffbridge data to dataframe...'):
+        df = mlBridgeEndplayLib.convert_endplay_df_to_mlBridge_df(df)
+    with st.spinner('Creating hand data. Takes 1 to 2 minutes...'):
+        # with safe_resource(): # perform_hand_augmentations() requires a lock because of double dummy solver dll
+        #     # todo: break apart perform_hand_augmentations into dd and sd augmentations to speed up and stqdm()\
+        #     progress = st.progress(0) # pass progress bar to augmenter to show progress of long running operations
+        #     augmenter = mlBridgeAugmentLib.HandAugmenter(df,{},sd_productions=st.session_state.single_dummy_sample_count,progress=progress)
+        #     df = augmenter.perform_hand_augmentations()
+        df = perform_hand_augmentations(df)
+    with st.spinner('Augmenting with matchpoints and percentages data...'):
+        augmenter = mlBridgeAugmentLib.MatchPointAugmenter(df)
+        df = augmenter.perform_matchpoint_augmentations()
+    with st.spinner('Augmenting with result data...'):
+        augmenter = mlBridgeAugmentLib.ResultAugmenter(df,{})
+        df = augmenter.perform_result_augmentations()
+    with st.spinner('Augmenting with DD and SD data...'):
+        augmenter = mlBridgeAugmentLib.DDSDAugmenter(df)
+        df = augmenter.perform_dd_sd_augmentations()
+    return df
+
 # todo: implement stqdm progress bar
 def Process_PBN(path_url,boards,df,everything_df,hrs_d={}):
     with st.spinner("Converting PBN to Endplay Dataframe ..."):
         df = mlBridgeEndplayLib.endplay_boards_to_df({path_url:boards})
         #st.write("After endplay_boards_to_df")
         #ShowDataFrameTable(df, key=f"process_endplay_boards_to_df_key")
-    with st.spinner("Converting Endplay Dataframe to mlBridge Dataframe ..."):
-        df = mlBridgeEndplayLib.convert_endplay_df_to_mlBridge_df(df)
-        #st.write("After convert_endplay_df_to_mlBridge_df_key")
-        #ShowDataFrameTable(df, key=f"process_convert_endplay_df_to_mlBridge_df_key")
-    with st.spinner("Performing Hand Augmentations ..."):
-        df = mlBridgeAugmentLib.perform_hand_augmentations(df,hrs_d,sd_productions=st.session_state.single_dummy_sample_count)
-        #st.write("After perform_hand_augmentations")
-        #ShowDataFrameTable(df, key=f"perform_hand_augmentations_key")
-    with st.spinner("Performing Matchpoint and Percentage Augmentations ..."):
-        df = mlBridgeAugmentLib.PerformMatchPointAndPercentAugmentations(df)
-        #st.write("After PerformMatchPointAndPercentAugmentations")
-        #ShowDataFrameTable(df, key=f"PerformMatchPointAndPercentAugmentations_key")
-    with st.spinner("Performing Result Augmentations ..."):
-        df = mlBridgeAugmentLib.PerformResultAugmentations(df,hrs_d)
-        #st.write("After PerformResultAugmentations")
-        #ShowDataFrameTable(df, key=f"PerformResultAugmentations_key")
-    with st.spinner("Performing DD_SD Augmentations ..."):
-        df = mlBridgeAugmentLib.Perform_DD_SD_Augmentations(df)
+    df = augment_df(df)
         #st.write("After Perform_DD_SD_Augmentations")
         #ShowDataFrameTable(df, key=f"Perform_DD_SD_Augmentations_key")
-    with st.spinner("Creating Bidding Tables. Very slow. Takes 12 minutes ..."): # todo: make faster. update message.
-        expression_evaluator = mlBridgeBiddingLib.ExpressionEvaluator()
-        df = expression_evaluator.create_bidding_table_df(df,st.session_state.bt_prior_bids_to_bt_entry_d)
-    with st.spinner("Creating Ai Auctions ..."):
-        finder = mlBridgeBiddingLib.AuctionFinder(st.session_state.bt_prior_bids_to_bt_entry_d,st.session_state.bt_bid_to_next_bids_d,st.session_state.exprStr_to_exprID_d)
-        st.session_state.exprs_dfs_d = finder.augment_df_with_bidding_info(df)
-        assert len(st.session_state.exprs_dfs_d) == len(df)
-        for k,expr_df in st.session_state.exprs_dfs_d.items():
-            print(k,expr_df)
-            break
+    # with st.spinner("Creating Bidding Tables. Very slow. Takes 12 minutes ..."): # todo: make faster. update message.
+    #     expression_evaluator = mlBridgeBiddingLib.ExpressionEvaluator()
+    #     df = expression_evaluator.create_bidding_table_df(df,st.session_state.bt_prior_bids_to_bt_entry_d)
+    # with st.spinner("Creating Ai Auctions ..."):
+    #     finder = mlBridgeBiddingLib.AuctionFinder(st.session_state.bt_prior_bids_to_bt_entry_d,st.session_state.bt_bid_to_next_bids_d,st.session_state.exprStr_to_exprID_d)
+    #     st.session_state.exprs_dfs_d = finder.augment_df_with_bidding_info(df)
+    #     assert len(st.session_state.exprs_dfs_d) == len(df)
+    #     for k,expr_df in st.session_state.exprs_dfs_d.items():
+    #         print(k,expr_df)
+    #         break
 
     # if save_intermediate_files:
     #     # save df as pickle because it contains object columns. later, they're dropped when creating pbn_df.
@@ -582,7 +617,7 @@ if __name__ == '__main__':
     if 'first_time_only_initialized' not in st.session_state:
         st.session_state.first_time_only_initialized = True
         st.set_page_config(layout="wide")
-        streamlitlib.widen_scrollbars()
+        #streamlitlib.widen_scrollbars() # removed because scrollbars squeezes out a one row dataframe in AgGrid() and st.dataframe()
 
         st.session_state.assistant_logo = 'https://github.com/BSalita/Bridge_Game_Postmortem_Chatbot/blob/main/assets/logo_assistant.gif?raw=true' # 🥸 todo: put into config. must have raw=true for github url.
         st.session_state.guru_logo = 'https://github.com/BSalita/Bridge_Game_Postmortem_Chatbot/blob/main/assets/logo_guru.png?raw=true' # 🥷todo: put into config file. must have raw=true for github url.
@@ -596,23 +631,23 @@ if __name__ == '__main__':
         dataPath = bboPath.joinpath('data')
         biddingPath = bboPath.joinpath('bidding')
 
-        # takes 10m
-        bbo_eval_bidding_tables_d_filename = 'bbo_eval_bidding_tables_d.pkl'
-        bbo_eval_bidding_tables_d_file = biddingPath.joinpath(bbo_eval_bidding_tables_d_filename)
-        with open(bbo_eval_bidding_tables_d_file, 'rb') as f:
-            st.session_state.bt_prior_bids_to_bt_entry_d, st.session_state.bt_bid_to_next_bids_d = pickle.load(f)
-        print(f"Loaded {bbo_eval_bidding_tables_d_filename}: size:{bbo_eval_bidding_tables_d_file.stat().st_size}")
+        # # takes 10m
+        # bbo_eval_bidding_tables_d_filename = 'bbo_eval_bidding_tables_d.pkl'
+        # bbo_eval_bidding_tables_d_file = biddingPath.joinpath(bbo_eval_bidding_tables_d_filename)
+        # with open(bbo_eval_bidding_tables_d_file, 'rb') as f:
+        #     st.session_state.bt_prior_bids_to_bt_entry_d, st.session_state.bt_bid_to_next_bids_d = pickle.load(f)
+        # print(f"Loaded {bbo_eval_bidding_tables_d_filename}: size:{bbo_eval_bidding_tables_d_file.stat().st_size}")
 
-        # takes 1s per 1m rows.
-        # todo: evaluated_expressions_d is probably obsolete as its concatenated into train_df.
-        bbo_eval_bidding_tables_d_filename = 'bbo_bidding_tables_dicts.pkl'
-        bbo_eval_bidding_tables_d_file = dataPath.joinpath(bbo_eval_bidding_tables_d_filename)
-        with open(bbo_eval_bidding_tables_d_file, 'rb') as f:
-            #evaluated_expressions_d, exprStr_to_exprID_d = pickle.load(f)
-            _, st.session_state.exprStr_to_exprID_d = pickle.load(f)
-        print(f"Loaded {bbo_eval_bidding_tables_d_filename}: size:{bbo_eval_bidding_tables_d_file.stat().st_size}")
-        #print(f"{len(evaluated_expressions_d)=} {len(exprStr_to_exprID_d)=}")
-        print(f"{len(st.session_state.exprStr_to_exprID_d)=}")
+        # # takes 1s per 1m rows.
+        # # todo: evaluated_expressions_d is probably obsolete as its concatenated into train_df.
+        # bbo_eval_bidding_tables_d_filename = 'bbo_bidding_tables_dicts.pkl'
+        # bbo_eval_bidding_tables_d_file = dataPath.joinpath(bbo_eval_bidding_tables_d_filename)
+        # with open(bbo_eval_bidding_tables_d_file, 'rb') as f:
+        #     #evaluated_expressions_d, exprStr_to_exprID_d = pickle.load(f)
+        #     _, st.session_state.exprStr_to_exprID_d = pickle.load(f)
+        # print(f"Loaded {bbo_eval_bidding_tables_d_filename}: size:{bbo_eval_bidding_tables_d_file.stat().st_size}")
+        # #print(f"{len(evaluated_expressions_d)=} {len(exprStr_to_exprID_d)=}")
+        # print(f"{len(st.session_state.exprStr_to_exprID_d)=}")
 
     # Refreshable defaults
     app_datetime = datetime.fromtimestamp(pathlib.Path(__file__).stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
@@ -706,17 +741,18 @@ if __name__ == '__main__':
 
             # Register DataFrame as 'results' view
         st.session_state.con.register('self', st.session_state.df)
-        ShowDataFrameTable(st.session_state.df, query=st.session_state.default_sql_query, key='show_default_query_key')
+        st.dataframe(st.session_state.df) # todo: using st.dataframe() because AgGrid() doesn't properly show 1 row of data.
+        #ShowDataFrameTable(st.session_state.df, query=st.session_state.default_sql_query, key='show_default_query_key')
 
-        for i,(k,auctions_df) in enumerate(st.session_state.exprs_dfs_d.items()):
-            print(i,k,auctions_df)
-            if i >= 10:
-                break
-            ShowDataFrameTable(auctions_df, query='SELECT DISTINCT index, Board, PBN, Dealer, Vul FROM auctions_df', key=f'show_distinct_key_{k}')
-            ShowDataFrameTable(auctions_df, query='SELECT * EXCLUDE (Board, PBN, Dealer, Vul) FROM auctions_df', key=f'show_exclude_distincts_key_{k}')
-            exploded_auctions_df = auctions_df.explode(['criteria_str','criteria_col','criteria_values'])
-            ShowDataFrameTable(exploded_auctions_df, query='SELECT DISTINCT index, Board, PBN, Dealer, Vul FROM exploded_auctions_df', key=f'show_distinct_exploded_auctions_key_{k}')
-            ShowDataFrameTable(exploded_auctions_df, query='SELECT * EXCLUDE (Board, PBN, Dealer, Vul) FROM exploded_auctions_df', key=f'show_exclude_distincts_exploded_auctions_key_{k}')
+        # for i,(k,auctions_df) in enumerate(st.session_state.exprs_dfs_d.items()):
+        #     print(i,k,auctions_df)
+        #     if i >= 10:
+        #         break
+        #     ShowDataFrameTable(auctions_df, query='SELECT DISTINCT index, Board, PBN, Dealer, Vul FROM auctions_df', key=f'show_distinct_key_{k}')
+        #     ShowDataFrameTable(auctions_df, query='SELECT * EXCLUDE (Board, PBN, Dealer, Vul) FROM auctions_df', key=f'show_exclude_distincts_key_{k}')
+        #     exploded_auctions_df = auctions_df.explode(['criteria_str','criteria_col','criteria_values'])
+        #     ShowDataFrameTable(exploded_auctions_df, query='SELECT DISTINCT index, Board, PBN, Dealer, Vul FROM exploded_auctions_df', key=f'show_distinct_exploded_auctions_key_{k}')
+        #     ShowDataFrameTable(exploded_auctions_df, query='SELECT * EXCLUDE (Board, PBN, Dealer, Vul) FROM exploded_auctions_df', key=f'show_exclude_distincts_exploded_auctions_key_{k}')
 
     if st.session_state.show_sql_query:
         with st.container():
