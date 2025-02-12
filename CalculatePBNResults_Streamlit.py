@@ -25,13 +25,13 @@ from endplay.dds import par, calc_all_tables
 from endplay.dealer import generate_deals
 
 sys.path.append(str(pathlib.Path.cwd().joinpath('streamlitlib')))  # global
-sys.path.append(str(pathlib.Path.cwd().joinpath('mlBridgeLib')))  # global
+sys.path.append(str(pathlib.Path.cwd().joinpath('mlBridgeLib')))  # global # Requires "./mlBridgeLib" be in extraPaths in .vscode/settings.json
 
 import streamlitlib
 #import mlBridgeLib
 import mlBridgeAugmentLib
 import mlBridgeEndplayLib
-import mlBridgeBiddingLib
+#import mlBridgeBiddingLib
 
 
 # def create_augmented_df(df):
@@ -351,46 +351,30 @@ def LoadPage():
     return
 
 
-import threading
-import time
-
-@st.cache_resource
-def safe_resource():
-    return threading.Lock()
-
-
-def perform_hand_augmentations(df):
-    # Create an empty placeholder for status messages
-    status_placeholder = st.empty()
-
-    acquired = False
-    mutex = safe_resource()
-    while not acquired:
-        acquired = mutex.acquire(timeout=2)
-        if not acquired:
-            status_placeholder.info("Hand analysis is queued for processing. Please wait...")
-            time.sleep(1)
-    try:
-        status_placeholder.empty()
-        progress = st.progress(0) # pass progress bar to augmenter to show progress of long running operations
-        augmenter = mlBridgeAugmentLib.HandAugmenter(df,{},sd_productions=st.session_state.single_dummy_sample_count,progress=progress)
-        df = augmenter.perform_hand_augmentations()
-    finally:
-        mutex.release()
-
-    return df
+def perform_hand_augmentations(df, sd_productions):
+    """Wrapper for backward compatibility"""
+    def hand_augmentation_work(df, progress, **kwargs):
+        augmenter = mlBridgeAugmentLib.HandAugmenter(
+            df, 
+            {}, 
+            sd_productions=kwargs.get('sd_productions'),
+            progress=progress
+        )
+        return augmenter.perform_hand_augmentations()
+    
+    return streamlitlib.perform_queued_work(
+        df, 
+        hand_augmentation_work, 
+        work_description="Hand analysis",
+        sd_productions=sd_productions
+    )
 
 
 def augment_df(df):
     with st.spinner('Creating ffbridge data to dataframe...'):
         df = mlBridgeEndplayLib.convert_endplay_df_to_mlBridge_df(df)
     with st.spinner('Creating hand data. Takes 1 to 2 minutes...'):
-        # with safe_resource(): # perform_hand_augmentations() requires a lock because of double dummy solver dll
-        #     # todo: break apart perform_hand_augmentations into dd and sd augmentations to speed up and stqdm()\
-        #     progress = st.progress(0) # pass progress bar to augmenter to show progress of long running operations
-        #     augmenter = mlBridgeAugmentLib.HandAugmenter(df,{},sd_productions=st.session_state.single_dummy_sample_count,progress=progress)
-        #     df = augmenter.perform_hand_augmentations()
-        df = perform_hand_augmentations(df)
+        df = perform_hand_augmentations(df,st.session_state.single_dummy_sample_count)
     with st.spinner('Augmenting with matchpoints and percentages data...'):
         augmenter = mlBridgeAugmentLib.MatchPointAugmenter(df)
         df = augmenter.perform_matchpoint_augmentations()

@@ -9,12 +9,16 @@
                 "type": "debugpy",
                 "request": "launch",
                 "module": "streamlit",
+                "justMyCode": true,
                 "args": [
                     "run",
-                    "CalculatePBNResults_Streamlit.py", // "${file}"
+                    "CalculatePBNResults_Streamlit.py", // was "${file}"
                 ],
-                "console": "integratedTerminal",
-                "justMyCode": false
+                "env": {
+                    "STREAMLIT_APP": "${file}",
+                    "STREAMLIT_ENV": "development",
+                    //"STREAMLIT_QUERY_STRING": "player_number=2663279",
+                }
             }
         ]
 }
