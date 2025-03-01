@@ -2,6 +2,7 @@
 # streamlit program to display Bridge game deal statistics from a PBN file.
 # Invoke from system prompt using: streamlit run CalculatePBNResults_Streamlit.py
 
+
 import streamlit as st
 import streamlit_chat
 from streamlit_extras.bottom_container import bottom
@@ -10,13 +11,22 @@ from st_aggrid import AgGrid
 
 import pathlib
 import fsspec
-import polars as pd # used for __version__ only
 import polars as pl
 import duckdb
+import json
 import pickle
 from collections import defaultdict
 from datetime import datetime, timezone
 import sys
+from dotenv import load_dotenv
+
+# Only declared to display version information
+#import fastai
+import numpy as np
+import pandas as pd
+#import safetensors
+#import sklearn
+#import torch
 
 import endplay # for __version__
 from endplay.parsers import pbn, lin, json
@@ -162,9 +172,10 @@ def ShowDataFrameTable(df, key, query='SELECT * FROM self', show_sql_query=True)
 
 
 def app_info():
-    st.caption(f"Project lead is Robert Salita research@AiPolice.org. Code written in Python. UI written in streamlit. Data engine is polars. Query engine is duckdb. Bridge lib is endplay. Self hosted using Cloudflare Tunnel. Repo:https://github.com/BSalita/Calculate_PBN_Results")
+    st.caption(f"Project lead is Robert Salita research@AiPolice.org. Code written in Python. UI written in Streamlit. AI API is OpenAI. Data engine is Pandas. Query engine is Duckdb. Chat UI uses streamlit-chat. Self hosted using Cloudflare Tunnel. Repo:https://github.com/BSalita/Bridge_Game_Postmortem_Chatbot Club data scraped from public ACBL webpages. Tournament data from ACBL API.")
+    # obsolete when chat was removed: Default AI model:{DEFAULT_AI_MODEL} OpenAI client:{openai.__version__} fastai:{fastai.__version__} safetensors:{safetensors.__version__} sklearn:{sklearn.__version__} torch:{torch.__version__} 
     st.caption(
-        f"App:{app_datetime} Python:{'.'.join(map(str, sys.version_info[:3]))} Streamlit:{st.__version__} Pandas:{pd.__version__} polars:{pl.__version__} endplay:{endplay.__version__} Query Params:{st.query_params.to_dict()}")
+        f"App:{st.session_state.app_datetime} Python:{'.'.join(map(str, sys.version_info[:3]))} Streamlit:{st.__version__} Pandas:{pd.__version__} duckdb:{duckdb.__version__} numpy:{np.__version__} polars:{pl.__version__} Query Params:{st.query_params.to_dict()}")
 
 
 from fsspec.utils import infer_storage_options
@@ -182,18 +193,16 @@ def chat_input_on_submit():
 
 
 def sample_count_on_change():
-    st.session_state.single_dummy_sample_count = st.session_state.create_sidebar_single_dummy_sample_count_key
-    if 'df' in st.session_state:
-        LoadPage()
+    st.session_state.single_dummy_sample_count = st.session_state.single_dummy_sample_count_number_input
+    change_game_state()
 
 
-def sql_query_on_change():
-    st.session_state.show_sql_query = st.session_state.create_sidebar_show_sql_query_checkbox_key
-    if 'df' in st.session_state:
-        LoadPage()
+def show_sql_query_change():
+    # toggle whether to show sql query
+    st.session_state.show_sql_query = st.session_state.sql_query_checkbox
 
 
-def LoadPage_LIN(file_data,url,path_url,boards,df,everything_df):
+def change_game_state_LIN(file_data,url,path_url,boards,df,everything_df):
     #st.error(f"Unsupported file type: {path_url.suffix}")
     boards = lin.loads(file_data)
     return boards
@@ -245,23 +254,23 @@ def flatten_df(df):
     return df
 
 
-def LoadPage_JSON(file_data,url,path_url,boards,df,everything_df):
+def change_game_state_JSON(file_data,url,path_url,boards,df,everything_df):
     st.error(f"Unsupported file type: {path_url.suffix}")
     return None
     boards = json.loads(file_data)
     return boards
 
 
-def LoadPage_PBN(file_data,url,path_url,boards,df,everything_df):
+def change_game_state_PBN(file_data,url,path_url,boards,df,everything_df):
     if boards is None and df is None:
         with st.spinner("Parsing PBN file ..."):
             boards = pbn.loads(file_data)
             if len(boards) == 0:
                 st.warning(f"{url} has no boards.")
                 return
-            if len(boards) > recommended_board_max:
-                st.warning(f"{url} has {len(boards)} boards. More than {recommended_board_max} boards may result in instability.")
-    if save_intermediate_files:
+            if len(boards) > st.session_state.recommended_board_max:
+                st.warning(f"{url} has {len(boards)} boards. More than {st.session_state.recommended_board_max} boards may result in instability.")
+    if st.session_state.save_intermediate_files:
         boards_url = pathlib.Path(path_url.stem+'_boards').with_suffix('.pkl')
         boards_path = pathlib.Path(boards_url)
         with st.spinner(f"Saving {boards_url} file ..."):
@@ -271,9 +280,11 @@ def LoadPage_PBN(file_data,url,path_url,boards,df,everything_df):
     return boards
 
 
-def LoadPage():
+def change_game_state():
 
     #with st.session_state.chat_container:
+    st.session_state.session_id = 'unknown session'
+    # need to do reset()?
 
     url = st.session_state.create_sidebar_text_input_url_key.strip()
     st.text(f"Selected URL: {url}") # using protocol:{get_url_protocol(url)}")
@@ -323,10 +334,10 @@ def LoadPage():
                     match path_url.suffix:
                         case '.pbn':
                             file_data = f.read()
-                            boards = LoadPage_PBN(file_data,url,path_url,boards,df,everything_df)
+                            boards = change_game_state_PBN(file_data,url,path_url,boards,df,everything_df)
                         case '.lin':
                             file_data = f.read()
-                            boards = LoadPage_LIN(file_data,url,path_url,boards,df,everything_df)
+                            boards = change_game_state_LIN(file_data,url,path_url,boards,df,everything_df)
                         case '.json':
                             file_data = f.read()
                             json_data = json.loads(file_data)
@@ -337,7 +348,7 @@ def LoadPage():
                             #pass
                             # b = boards.unnest('Matches')
                             # pl.DataFrame(b['Sessions'][0].struct.unnest())
-                            #boards = LoadPage_JSON(file_data,url,path_url,boards,df,everything_df)
+                            #boards = change_game_state_JSON(file_data,url,path_url,boards,df,everything_df)
                         case _:
                             st.error(f"Unsupported file type: {path_url.suffix}")
                             return
@@ -371,25 +382,31 @@ def perform_hand_augmentations(df, sd_productions):
 
 
 def augment_df(df):
-    with st.spinner('Creating ffbridge data to dataframe...'):
-        df = mlBridgeEndplayLib.convert_endplay_df_to_mlBridge_df(df)
-    with st.spinner('Creating hand data. Takes 1 to 2 minutes...'):
-        df = perform_hand_augmentations(df,st.session_state.single_dummy_sample_count)
-    with st.spinner('Augmenting with matchpoints and percentages data...'):
-        augmenter = mlBridgeAugmentLib.MatchPointAugmenter(df)
-        df = augmenter.perform_matchpoint_augmentations()
+    with st.spinner('Creating hand data...'):
+        # with safe_resource(): # perform_hand_augmentations() requires a lock because of double dummy solver dll
+        #     # todo: break apart perform_hand_augmentations into dd and sd augmentations to speed up and stqdm()\
+        #     progress = st.progress(0) # pass progress bar to augmenter to show progress of long running operations
+        #     augmenter = mlBridgeAugmentLib.HandAugmenter(df,{},sd_productions=st.session_state.single_dummy_sample_count,progress=progress)
+        #     df = augmenter.perform_hand_augmentations()
+        df = perform_hand_augmentations(df, st.session_state.single_dummy_sample_count)
     with st.spinner('Augmenting with result data...'):
         augmenter = mlBridgeAugmentLib.ResultAugmenter(df,{})
         df = augmenter.perform_result_augmentations()
     with st.spinner('Augmenting with DD and SD data...'):
         augmenter = mlBridgeAugmentLib.DDSDAugmenter(df)
         df = augmenter.perform_dd_sd_augmentations()
+    with st.spinner('Augmenting with matchpoints and percentages data...'):
+        augmenter = mlBridgeAugmentLib.MatchPointAugmenter(df)
+        df = augmenter.perform_matchpoint_augmentations()
     return df
+
 
 # todo: implement stqdm progress bar
 def Process_PBN(path_url,boards,df,everything_df,hrs_d={}):
     with st.spinner("Converting PBN to Endplay Dataframe ..."):
         df = mlBridgeEndplayLib.endplay_boards_to_df({path_url:boards})
+    with st.spinner("Augmenting with hand data..."):
+        df = mlBridgeEndplayLib.convert_endplay_df_to_mlBridge_df(df)
         #st.write("After endplay_boards_to_df")
         #ShowDataFrameTable(df, key=f"process_endplay_boards_to_df_key")
     df = augment_df(df)
@@ -501,9 +518,8 @@ def filter_dataframe(df, group_id, session_id, player_id, partner_id):
 
     return df
 
-
 def create_sidebar():
-    st.sidebar.caption('Build:'+app_datetime)
+    st.sidebar.caption('Build:'+st.session_state.app_datetime)
 
     # example valid urls
     #default_url = 'https://raw.githubusercontent.com/BSalita/Calculate_PBN_Results/master/DDS_Camrose24_1-%20BENCAM22%20v%20WBridge5.pbn'
@@ -513,52 +529,78 @@ def create_sidebar():
     #default_url = 'https://raw.githubusercontent.com/BSalita/Calculate_PBN_Results/master/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
     default_url = '3494191054-1682343601-bsalita.lin'
     #default_url = 'GIB-Thorvald-8638-2024-08-23.pbn'
-    st.sidebar.text_input('Enter URL:', default_url, on_change=LoadPage, key='create_sidebar_text_input_url_key', help='Enter a URL or pathless local file name.') # , on_change=LoadPage
+    st.sidebar.text_input('Enter URL:', default_url, on_change=change_game_state, key='create_sidebar_text_input_url_key', help='Enter a URL or pathless local file name.') # , on_change=change_game_state
     # using css to change button color for the entire button width. The color was choosen to match the the restrictive text colorizer (:green-background[Go]) used in st.info() below.
     css = """section[data-testid="stSidebar"] div.stButton button {
         background-color: rgba(33, 195, 84, 0.1);
         width: 50px;
         }"""
     st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
-    st.sidebar.button('Go', on_click=LoadPage, key='create_sidebar_go_button_key', help='Load PBN data from URL.')
+    st.sidebar.button('Go', on_click=change_game_state, key='create_sidebar_go_button_key', help='Load PBN data from URL.')
 
-    st.session_state.single_dummy_sample_count = st.sidebar.number_input('Single Dummy Sample Count',value=single_dummy_sample_count_default,key='create_sidebar_single_dummy_sample_count_key',on_change=sample_count_on_change,min_value=1,max_value=1000,step=1,help='Number of random deals to generate for calculating single dummy probabilities. Larger number (10 to 30) is more accurate but slower. Use 1 to 5 for fast, less accurate results.')
+    st.session_state.single_dummy_sample_count = st.sidebar.number_input('Single Dummy Sample Count',value=st.session_state.single_dummy_sample_count_default,key='single_dummy_sample_count_number_input',on_change=sample_count_on_change,min_value=1,max_value=1000,step=1,help='Number of random deals to generate for calculating single dummy probabilities. Larger number (10 to 30) is more accurate but slower. Use 1 to 5 for fast, less accurate results.')
 
     # SELECT Board, Vul, ParContract, ParScore_NS, Custom_ParContract FROM self
-    st.sidebar.checkbox('Show SQL Query',value=show_sql_query_default,key='create_sidebar_show_sql_query_checkbox_key',on_change=sql_query_on_change,help='Show SQL used to query dataframes.')
+    st.sidebar.checkbox('Show SQL Query',value=st.session_state.show_sql_query_default,key='sql_query_checkbox',on_change=show_sql_query_change,help='Show SQL used to query dataframes.')
+    # These files are reloaded each time for development purposes. Only takes a second.
+    # todo: put filenames into a .json or .toml file?
+    st.session_state.default_favorites_file = pathlib.Path(
+        'default.favorites.json')
+    st.session_state.player_id_custom_favorites_file = pathlib.Path(
+        'favorites/'+st.session_state.player_id+'.favorites.json')
+    st.session_state.debug_favorites_file = pathlib.Path(
+        'favorites/debug.favorites.json')
+    read_configs()
 
 
-def read_favorites():
+def read_configs():
+
+    st.session_state.default_favorites_file = pathlib.Path(
+        'default.favorites.json')
+    st.session_state.player_id_custom_favorites_file = pathlib.Path(
+        f'favorites/{st.session_state.player_id}.favorites.json')
+    st.session_state.debug_favorites_file = pathlib.Path(
+        'favorites/debug.favorites.json')
 
     if st.session_state.default_favorites_file.exists():
         with open(st.session_state.default_favorites_file, 'r') as f:
             favorites = json.load(f)
-            st.session_state.favorites = favorites
+        st.session_state.favorites = favorites
+        #st.session_state.vetted_prompts = get_vetted_prompts_from_favorites(favorites)
 
     if st.session_state.player_id_custom_favorites_file.exists():
         with open(st.session_state.player_id_custom_favorites_file, 'r') as f:
             player_id_favorites = json.load(f)
-            st.session_state.player_id_favorites = player_id_favorites
+        st.session_state.player_id_favorites = player_id_favorites
 
     if st.session_state.debug_favorites_file.exists():
         with open(st.session_state.debug_favorites_file, 'r') as f:
             debug_favorites = json.load(f)
-            st.session_state.debug_favorites = debug_favorites
+        st.session_state.debug_favorites = debug_favorites
+
+    # display missing prompts in favorites
+    if 'missing_in_summarize' not in st.session_state:
+        # Get the prompts from both locations
+        summarize_prompts = st.session_state.favorites['Buttons']['Summarize']['prompts']
+        vetted_prompts = st.session_state.favorites['SelectBoxes']['Vetted_Prompts']
+
+        # Process the keys to ignore leading '@'
+        st.session_state.summarize_keys = {p.lstrip('@') for p in summarize_prompts}
+        st.session_state.vetted_keys = set(vetted_prompts.keys())
+
+        # Find items in summarize_prompts but not in vetted_prompts. There should be none.
+        st.session_state.missing_in_vetted = st.session_state.summarize_keys - st.session_state.vetted_keys
+        assert len(st.session_state.missing_in_vetted) == 0, f"Oops. {st.session_state.missing_in_vetted} not in {st.session_state.vetted_keys}."
+
+        # Find items in vetted_prompts but not in summarize_prompts. ok if there's some missing.
+        st.session_state.missing_in_summarize = st.session_state.vetted_keys - st.session_state.summarize_keys
+
+        print("\nItems in Vetted_Prompts but not in Summarize.prompts:")
+        for item in st.session_state.missing_in_summarize:
+            print(f"- {item}: {vetted_prompts[item]['title']}")
 
 
-def load_vetted_prompts(json_file):
-
-    sql_queries = []
-    if json_file.exists():
-        with open(json_file) as f:
-            json_data = json.load(f)
-        
-        # Navigate the JSON path to get the appropriate list of prompts
-        vetted_prompts = [json_data['SelectBoxes']['Vetted_Prompts'][p[1:]] for p in json_data["Buttons"]['Summarize']['prompts']]
-    
-    return vetted_prompts
-
-
+# todo: similar to prompt_keyword_replacements
 def process_prompt_macros(sql_query):
     replacements = {
         '{Player_Direction}': st.session_state.player_direction,
@@ -571,31 +613,130 @@ def process_prompt_macros(sql_query):
     return sql_query
 
 
-def show_dfs(vetted_prompts, pdf_assets):
-    sql_query_count = 0
-
+def write_report():
     # bar_format='{l_bar}{bar}' isn't working in stqdm. no way to suppress r_bar without editing stqdm source code.
-    for category in stqdm(list(vetted_prompts), desc='Morty is analyzing your game...', bar_format='{l_bar}{bar}'): #[:-3]:
-        #print('category:',category)
-        if "prompts" in category:
-            for i,prompt in enumerate(category["prompts"]):
-                #print('prompt:',prompt) 
-                if "sql" in prompt and prompt["sql"]:
-                    if i == 0:
-                        streamlit_chat.message(f"Morty: {category['help']}", key=f'morty_sql_query_{sql_query_count}', logo=st.session_state.assistant_logo)
-                        pdf_assets.append(f"## {category['help']}")
+    # todo: need to pass the Button title to the stqdm description. this is a hack until implemented.
+    st.session_state.main_section_container = st.container(border=True)
+    with st.session_state.main_section_container:
+        report_title = f"Bridge Game Postmortem Report Personalized for {st.session_state.player_name}" # can't use (st.session_state.player_id) because of href link below.
+        report_creator = "Created by https://pbn.postmortem.chat"
+        report_event_info = f"{st.session_state.game_description} (event id {st.session_state.session_id})."
+        #report_acbl_results_page = f"ACBL Results Page: {st.session_state.acbl_results_page}"
+        report_your_match_info = f"Your pair was {st.session_state.pair_id}{st.session_state.pair_direction} in section {st.session_state.section_name}. You played {st.session_state.player_direction}. Your partner was {st.session_state.partner_name} ({st.session_state.partner_id}) who played {st.session_state.partner_direction}."
+        st.markdown(f"### {report_title}")
+        st.markdown(f"##### {report_creator}")
+        st.markdown(f"#### {report_event_info}")
+        #st.markdown(f"##### {report_acbl_results_page}")
+        st.markdown(f"#### {report_your_match_info}")
+        pdf_assets = st.session_state.pdf_assets
+        pdf_assets.clear()
+        pdf_assets.append(f"# {report_title}")
+        pdf_assets.append(f"#### {report_creator}")
+        pdf_assets.append(f"### {report_event_info}")
+        #pdf_assets.append(f"#### {report_acbl_results_page}")
+        pdf_assets.append(f"### {report_your_match_info}")
+        st.session_state.button_title = 'Summarize' # todo: generalize to all buttons!
+        selected_button = st.session_state.favorites['Buttons'][st.session_state.button_title]
+        vetted_prompts = st.session_state.favorites['SelectBoxes']['Vetted_Prompts']
+        sql_query_count = 0
+        for stats in stqdm(selected_button['prompts'], desc='Creating personalized report...'):
+            assert stats[0] == '@', stats
+            stat = vetted_prompts[stats[1:]]
+            for i, prompt in enumerate(stat['prompts']):
+                if 'sql' in prompt and prompt['sql']:
                     #print('sql:',prompt["sql"])
+                    if i == 0:
+                        streamlit_chat.message(f"Morty: {stat['help']}", key=f'morty_sql_query_{sql_query_count}', logo=st.session_state.assistant_logo)
+                        pdf_assets.append(f"### {stat['help']}")
                     prompt_sql = prompt['sql']
                     sql_query = process_prompt_macros(prompt_sql)
                     query_df = ShowDataFrameTable(st.session_state.df, query=sql_query, key=f'sql_query_{sql_query_count}')
                     if query_df is not None:
                         pdf_assets.append(query_df)
                     sql_query_count += 1
-                    #break
-        #break
+
+        # As a text link
+        #st.markdown('[Back to Top](#your-personalized-report)')
+
+        # As an html button (needs styling added)
+        # can't use link_button() restarts page rendering. markdown() will correctly jump to href.
+        # st.link_button('Go to top of report',url='#your-personalized-report')\
+        report_title_anchor = report_title.replace(' ','-').lower()
+        st.markdown(f'<a target="_self" href="#{report_title_anchor}"><button>Go to top of report</button></a>', unsafe_allow_html=True)
+
+    if st.session_state.pdf_link.download_button(label="Download Personalized Report",
+            data=streamlitlib.create_pdf(st.session_state.pdf_assets, title=f"Bridge Game Postmortem Report Personalized for {st.session_state.player_id}"),
+            file_name = f"{st.session_state.session_id}-{st.session_state.player_id}-morty.pdf",
+            disabled = len(st.session_state.pdf_assets) == 0,
+            mime='application/octet-stream',
+            key='personalized_report_download_button'):
+        st.warning('Personalized report downloaded.')
 
 
-if __name__ == '__main__':
+def ask_sql_query():
+
+    if st.session_state.show_sql_query:
+        with st.container():
+            with bottom():
+                st.chat_input('Enter a SQL query e.g. SELECT PBN, Contract, Result, N, S, E, W', key='main_prompt_chat_input', on_submit=chat_input_on_submit)
+
+
+def create_ui():
+    create_sidebar()
+    if not st.session_state.sql_query_mode:
+        #create_tab_bar()
+        if st.session_state.session_id is not None:
+            write_report()
+    ask_sql_query()
+
+
+def reset_data():
+    # Refreshable defaults
+    st.session_state.app_datetime = datetime.fromtimestamp(pathlib.Path(__file__).stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
+    #pbn_filename_default = 'DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'  # local filename
+    st.session_state.single_dummy_sample_count_default = 2  # number of random deals to generate for calculating single dummy probabilities. Use smaller number for testing.
+    st.session_state.single_dummy_sample_count = st.session_state.single_dummy_sample_count_default
+    st.session_state.show_sql_query_default = True
+    st.session_state.show_sql_query = st.session_state.show_sql_query_default
+    st.session_state.sql_query_mode = False
+    st.session_state.save_intermediate_files = False # leave False for now. saving intermediate files presents problems with persistance. where to do it? how to clean up? how to handle multiple users?
+    st.session_state.recommended_board_max = 10000
+    
+    st.session_state.group_id_default = 0 # numeric or string?
+    st.session_state.session_id_default = None # numeric or string?
+    st.session_state.player_id_default = '0'# numeric or string?
+    st.session_state.player_name = 'Player'
+    st.session_state.partner_id_default = None # numeric or string?
+    st.session_state.player_direction_default = 'N'
+    st.session_state.partner_direction_default = 'S'
+    st.session_state.pair_id_default = None
+    st.session_state.pair_direction_default = 'NS'
+    st.session_state.opponent_pair_direction_default = 'EW'
+    st.session_state.game_description = 'Unknown game'
+    st.session_state.game_url_default = None
+    st.session_state.game_date_default = 'Unknown date' #pd.to_datetime(st.session_state.df['Date'].iloc[0]).strftime('%Y-%m-%d')
+
+    st.session_state.group_id = st.session_state.group_id_default
+    st.session_state.session_id = st.session_state.session_id_default
+    st.session_state.section_name = "unknown section"
+    st.session_state.pair_id = st.session_state.pair_id_default
+    st.session_state.player_id = st.session_state.player_id_default
+    st.session_state.partner_id = st.session_state.partner_id_default
+    st.session_state.partner_name = 'Partner'
+    st.session_state.player_direction = st.session_state.player_direction_default
+    st.session_state.partner_direction = st.session_state.partner_direction_default
+    st.session_state.pair_direction = st.session_state.pair_direction_default
+    st.session_state.opponent_pair_direction = st.session_state.opponent_pair_direction_default
+    st.session_state.game_url = st.session_state.game_url_default
+    st.session_state.game_date = st.session_state.game_date_default
+    st.session_state.use_historical_data = False # use historical data from file or get from url
+    st.session_state.pdf_assets = []
+    #st.session_state.df = None
+
+    st.session_state.default_sql_query = "SELECT PBN, Hand_N, Suit_N_S, Board, Contract, Result, Tricks, Score_NS, DDScore_NS, ParScore_NS, ParScore_Diff_NS, EV_NS_Max, EV_NS_MaxCol, EV_MaxScore_Diff_NS FROM self"
+
+
+def main():
 
     # first time only defaults
     if 'first_time_only_initialized' not in st.session_state:
@@ -615,6 +756,7 @@ if __name__ == '__main__':
         dataPath = bboPath.joinpath('data')
         biddingPath = bboPath.joinpath('bidding')
 
+        reset_data()
         # # takes 10m
         # bbo_eval_bidding_tables_d_filename = 'bbo_eval_bidding_tables_d.pkl'
         # bbo_eval_bidding_tables_d_file = biddingPath.joinpath(bbo_eval_bidding_tables_d_filename)
@@ -633,114 +775,30 @@ if __name__ == '__main__':
         # #print(f"{len(evaluated_expressions_d)=} {len(exprStr_to_exprID_d)=}")
         # print(f"{len(st.session_state.exprStr_to_exprID_d)=}")
 
-    # Refreshable defaults
-    app_datetime = datetime.fromtimestamp(pathlib.Path(__file__).stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
-    #pbn_filename_default = 'DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'  # local filename
-    single_dummy_sample_count_default = 2  # number of random deals to generate for calculating single dummy probabilities. Use smaller number for testing.
-    st.session_state.single_dummy_sample_count = single_dummy_sample_count_default
-    show_sql_query_default = True
-    st.session_state.show_sql_query = show_sql_query_default
-    save_intermediate_files = False # leave False for now. saving intermediate files presents problems with persistance. where to do it? how to clean up? how to handle multiple users?
-    recommended_board_max = 10000
-    
-    st.session_state.group_id_default = 0 # numeric or string?
-    st.session_state.session_id_default = 0 # numeric or string?
-    st.session_state.pair_id_default = None
-    st.session_state.player_id_default = 0 # numeric or string?
-    st.session_state.partner_id_default = None # numeric or string?
-    st.session_state.player_direction_default = 'N'
-    st.session_state.partner_direction_default = 'S'
-    st.session_state.pair_direction_default = 'NS'
-    st.session_state.opponent_pair_direction_default = 'EW'
-    st.session_state.game_url_default = None
-    st.session_state.game_date_default = 'Unknown date' #pd.to_datetime(st.session_state.df['Date'].iloc[0]).strftime('%Y-%m-%d')
-
-    st.session_state.group_id = st.session_state.group_id_default
-    st.session_state.session_id = st.session_state.session_id_default
-    st.session_state.pair_id = st.session_state.pair_id_default
-    st.session_state.player_id = st.session_state.player_id_default
-    st.session_state.partner_id = st.session_state.partner_id_default
-    st.session_state.player_direction = st.session_state.player_direction_default
-    st.session_state.partner_direction = st.session_state.partner_direction_default
-    st.session_state.pair_direction = st.session_state.pair_direction_default
-    st.session_state.opponent_pair_direction = st.session_state.opponent_pair_direction_default
-    st.session_state.game_url = st.session_state.game_url_default
-    st.session_state.game_date = st.session_state.game_date_default
-    st.session_state.use_historical_data = False # use historical data from file or get from url
-
-    st.session_state.default_sql_query = "SELECT PBN, Hand_N, Suit_N_S, Board, Contract, Result, Tricks, Score_NS, DDScore_NS, ParScore_NS, ParScore_Diff_NS, EV_NS_Max, EV_NS_MaxCol, EV_MaxScore_Diff_NS FROM self"
 
     if 'df' in st.session_state:
-        create_sidebar()
+        st.session_state.con.register('self', st.session_state.df)
+        create_ui()
     else:
-
         create_sidebar()
-        LoadPage()
+        # else:
 
-        # personalize to player, partner, opponents, etc.
-        st.session_state.df = filter_dataframe(st.session_state.df, st.session_state.group_id, st.session_state.session_id, st.session_state.player_id, st.session_state.partner_id)
+        #     create_sidebar()
+        #     change_game_state()
 
-        # Register DataFrame as 'results' view
-        st.session_state.con.register('self', st.session_state.df)
+        #     # personalize to player, partner, opponents, etc.
+        #     st.session_state.df = filter_dataframe(st.session_state.df, st.session_state.group_id, st.session_state.session_id, st.session_state.player_id, st.session_state.partner_id)
 
-        # ShowDataFrameTable(df, key='everything_df_key', query='SELECT Board, Pct_NS, Pct_EW, MP_NS, MP_EW FROM self')
+        #     # Register DataFrame as 'results' view
+        #     st.session_state.con.register('self', st.session_state.df)
 
-        st.session_state.default_favorites_file = pathlib.Path(
-            'default.favorites.json')
-        st.session_state.player_id_custom_favorites_file = pathlib.Path(
-            f'favorites/{st.session_state.player_id}.favorites.json')
-        st.session_state.debug_favorites_file = pathlib.Path(
-            'favorites/debug.favorites.json')
-        read_favorites()
+        #     # ShowDataFrameTable(df, key='everything_df_key', query='SELECT Board, Pct_NS, Pct_EW, MP_NS, MP_EW FROM self')
 
-        # pdf_assets = []
-        #pdf_assets.append(f"# Bridge Game Postmortem Report Personalized for {st.session_state.player_id}")
-        #pdf_assets.append(f"### Created by https://ffbridge.postmortem.chat")
-        #pdf_assets.append(f"## Game Date:? Session:{st.session_state.session_id} Player:{st.session_state.player_id} Partner:{st.session_state.partner_id}")
 
-        # st.session_state.vetted_prompts = load_vetted_prompts(st.session_state.default_favorites_file)
+        #     st.session_state.con.register('self', st.session_state.df)
+        #     st.dataframe(st.session_state.df) # todo: using st.dataframe() because AgGrid() doesn't properly show 1 row of data.
+        #     #ShowDataFrameTable(st.session_state.df, query=st.session_state.default_sql_query, key='show_default_query_key')
 
-        # with st.container(border=True):
-            # st.markdown('### Your Personalized Report')
-            # st.text(f'Game Date:? Session:{st.session_state.session_id} Player:{st.session_state.player_id} Partner:{st.session_state.partner_id}')
-            # show_dfs(st.session_state.vetted_prompts, pdf_assets)
 
-            # # As a text link
-            # #st.markdown('[Back to Top](#your-personalized-report)')
-
-            # # As an html button (needs styling added)
-            # # can't use link_button() restarts page rendering. markdown() will correctly jump to href.
-            # # st.link_button('Go to top of report',url='#your-personalized-report')
-            # st.markdown(''' <a target="_self" href="#your-personalized-report">
-            #                     <button>
-            #                         Go to top of report
-            #                     </button>
-            #                 </a>''', unsafe_allow_html=True)
-
-        # if st.sidebar.download_button(label="Download Personalized Report",
-        #         data=streamlitlib.create_pdf(pdf_assets, title=f"Bridge Game Postmortem Report Personalized for {st.session_state.player_id}"),
-        #         file_name = f"{st.session_state.session_id}-{st.session_state.player_id}-morty.pdf",
-        #         mime='application/octet-stream'):
-        #     st.warning('Personalized report downloaded.')
-
-            # Register DataFrame as 'results' view
-        st.session_state.con.register('self', st.session_state.df)
-        st.dataframe(st.session_state.df) # todo: using st.dataframe() because AgGrid() doesn't properly show 1 row of data.
-        #ShowDataFrameTable(st.session_state.df, query=st.session_state.default_sql_query, key='show_default_query_key')
-
-        # for i,(k,auctions_df) in enumerate(st.session_state.exprs_dfs_d.items()):
-        #     print(i,k,auctions_df)
-        #     if i >= 10:
-        #         break
-        #     ShowDataFrameTable(auctions_df, query='SELECT DISTINCT index, Board, PBN, Dealer, Vul FROM auctions_df', key=f'show_distinct_key_{k}')
-        #     ShowDataFrameTable(auctions_df, query='SELECT * EXCLUDE (Board, PBN, Dealer, Vul) FROM auctions_df', key=f'show_exclude_distincts_key_{k}')
-        #     exploded_auctions_df = auctions_df.explode(['criteria_str','criteria_col','criteria_values'])
-        #     ShowDataFrameTable(exploded_auctions_df, query='SELECT DISTINCT index, Board, PBN, Dealer, Vul FROM exploded_auctions_df', key=f'show_distinct_exploded_auctions_key_{k}')
-        #     ShowDataFrameTable(exploded_auctions_df, query='SELECT * EXCLUDE (Board, PBN, Dealer, Vul) FROM exploded_auctions_df', key=f'show_exclude_distincts_exploded_auctions_key_{k}')
-
-    if st.session_state.show_sql_query:
-        with st.container():
-            with bottom():
-                st.caption(f"Enter a SQL query in the box below. e.g. {st.session_state.default_sql_query}")
-                st.chat_input('Enter a SQL query', key='main_prompt_chat_input_key', on_submit=chat_input_on_submit)
-
+if __name__ == '__main__':
+    main()
