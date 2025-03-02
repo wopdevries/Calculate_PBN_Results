@@ -18,6 +18,7 @@ import pickle
 from collections import defaultdict
 from datetime import datetime, timezone
 import sys
+import platform
 from dotenv import load_dotenv
 
 # Only declared to display version information
@@ -358,47 +359,13 @@ def change_game_state():
     if boards is None:
         st.error(f"Unimplemented file type: {path_url.suffix}")
         return # not yet implemented
-    Process_PBN(path_url,boards,df,everything_df)
+
+    st.session_state.df = Process_PBN(path_url,boards,df,everything_df)
+    st.session_state.df = filter_dataframe(st.session_state.df, st.session_state.group_id, st.session_state.session_id, st.session_state.player_id, st.session_state.partner_id)
+    assert st.session_state.df.select(pl.col(pl.Object)).is_empty(), f"Found Object columns: {[col for col, dtype in st.session_state.df.schema.items() if dtype == pl.Object]}"
+    st.session_state.con.register(st.session_state.con_register_name, st.session_state.df) # ugh, df['scores_l'] must be previously dropped otherwise this hangs. reason unknown.
+
     return
-
-
-def perform_hand_augmentations(df, sd_productions):
-    """Wrapper for backward compatibility"""
-    def hand_augmentation_work(df, progress, **kwargs):
-        augmenter = mlBridgeAugmentLib.HandAugmenter(
-            df, 
-            {}, 
-            sd_productions=kwargs.get('sd_productions'),
-            progress=progress
-        )
-        return augmenter.perform_hand_augmentations()
-    
-    return streamlitlib.perform_queued_work(
-        df, 
-        hand_augmentation_work, 
-        work_description="Hand analysis",
-        sd_productions=sd_productions
-    )
-
-
-def augment_df(df):
-    with st.spinner('Creating hand data...'):
-        # with safe_resource(): # perform_hand_augmentations() requires a lock because of double dummy solver dll
-        #     # todo: break apart perform_hand_augmentations into dd and sd augmentations to speed up and stqdm()\
-        #     progress = st.progress(0) # pass progress bar to augmenter to show progress of long running operations
-        #     augmenter = mlBridgeAugmentLib.HandAugmenter(df,{},sd_productions=st.session_state.single_dummy_sample_count,progress=progress)
-        #     df = augmenter.perform_hand_augmentations()
-        df = perform_hand_augmentations(df, st.session_state.single_dummy_sample_count)
-    with st.spinner('Augmenting with result data...'):
-        augmenter = mlBridgeAugmentLib.ResultAugmenter(df,{})
-        df = augmenter.perform_result_augmentations()
-    with st.spinner('Augmenting with DD and SD data...'):
-        augmenter = mlBridgeAugmentLib.DDSDAugmenter(df)
-        df = augmenter.perform_dd_sd_augmentations()
-    with st.spinner('Augmenting with matchpoints and percentages data...'):
-        augmenter = mlBridgeAugmentLib.MatchPointAugmenter(df)
-        df = augmenter.perform_matchpoint_augmentations()
-    return df
 
 
 # todo: implement stqdm progress bar
@@ -453,16 +420,16 @@ def Process_PBN(path_url,boards,df,everything_df,hrs_d={}):
 
     #display_experiments(df)
 
-    st.session_state.df = df
+    return df
 
 
 def filter_dataframe(df, group_id, session_id, player_id, partner_id):
     # First filter for sessions containing player_id
 
-    df = df.filter(
-        pl.col('group_id').eq(group_id) &
-        pl.col('session_id').eq(session_id)
-    )
+    # df = df.filter(
+    #     pl.col('group_id').eq(group_id) &
+    #     pl.col('session_id').eq(session_id)
+    # )
     
     # Set direction variables based on where player_id is found
     player_direction = None
@@ -538,12 +505,16 @@ def create_sidebar():
     st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
     st.sidebar.button('Go', on_click=change_game_state, key='create_sidebar_go_button_key', help='Load PBN data from URL.')
 
-    st.session_state.single_dummy_sample_count = st.sidebar.number_input('Single Dummy Sample Count',value=st.session_state.single_dummy_sample_count_default,key='single_dummy_sample_count_number_input',on_change=sample_count_on_change,min_value=1,max_value=1000,step=1,help='Number of random deals to generate for calculating single dummy probabilities. Larger number (10 to 30) is more accurate but slower. Use 1 to 5 for fast, less accurate results.')
+    st.session_state.pdf_link = st.sidebar.empty()
 
-    # SELECT Board, Vul, ParContract, ParScore_NS, Custom_ParContract FROM self
-    st.sidebar.checkbox('Show SQL Query',value=st.session_state.show_sql_query_default,key='sql_query_checkbox',on_change=show_sql_query_change,help='Show SQL used to query dataframes.')
-    # These files are reloaded each time for development purposes. Only takes a second.
-    # todo: put filenames into a .json or .toml file?
+    with st.sidebar.expander('Developer Settings', False):
+        # do not use .sidebar in expander. it's already in the sidebar.
+        # SELECT Board, Vul, ParContract, ParScore_NS, Custom_ParContract FROM self
+        st.checkbox('Show SQL Query',value=st.session_state.show_sql_query,key='sql_query_checkbox',on_change=show_sql_query_change,help='Show SQL used to query dataframes.')
+        # These files are reloaded each time for development purposes. Only takes a second.
+        # todo: put filenames into a .json or .toml file?
+        st.session_state.single_dummy_sample_count = st.number_input('Single Dummy Sample Count',value=st.session_state.single_dummy_sample_count,key='single_dummy_sample_count_number_input',on_change=sample_count_on_change,min_value=1,max_value=1000,step=1,help='Number of random deals to generate for calculating single dummy probabilities. Larger number (10 to 30) is more accurate but slower. Use 1 to 5 for fast, less accurate results.')
+
     st.session_state.default_favorites_file = pathlib.Path(
         'default.favorites.json')
     st.session_state.player_id_custom_favorites_file = pathlib.Path(
@@ -551,6 +522,81 @@ def create_sidebar():
     st.session_state.debug_favorites_file = pathlib.Path(
         'favorites/debug.favorites.json')
     read_configs()
+    return
+
+
+def initialize_website_specific():
+
+    st.session_state.assistant_logo = 'https://github.com/BSalita/Bridge_Game_Postmortem_Chatbot/blob/master/assets/logo_assistant.gif?raw=true' # 🥸 todo: put into config. must have raw=true for github url.
+    st.session_state.guru_logo = 'https://github.com/BSalita/Bridge_Game_Postmortem_Chatbot/blob/master/assets/logo_guru.png?raw=true' # 🥷todo: put into config file. must have raw=true for github url.
+    st.session_state.game_url_default = None
+    st.session_state.game_name = 'pbn'
+    st.session_state.game_url = st.session_state.game_url_default
+    # todo: put filenames into a .json or .toml file?
+    st.session_state.rootPath = pathlib.Path('e:/bridge/data')
+    #st.session_state.acblPath = st.session_state.rootPath.joinpath('acbl')
+    #st.session_state.bboPath = st.session_state.rootPath.joinpath('bbo')
+    #st.session_state.dataPath = st.session_state.bboPath.joinpath('data')
+    #st.session_state.biddingPath = st.session_state.bboPath.joinpath('bidding')
+    #st.session_state.favoritesPath = pathlib.joinpath('favorites'),
+    #st.session_state.savedModelsPath = st.session_state.rootPath.joinpath('SavedModels')
+    st.session_state.player_id = "Unknown"
+    st.session_state.pair_direction = 'NS'
+    st.session_state.opponent_pair_direction = 'EW'
+
+    streamlit_chat.message(
+        f"Hi. I'm Morty. Your friendly postmortem chatbot. I only want to chat about {st.session_state.game_name} pair matchpoint games using a Mitchell movement and not shuffled.", key='intro_message_1', logo=st.session_state.assistant_logo)
+    streamlit_chat.message(
+        "I'm optimized for large screen devices such as a notebook or monitor. Do not use a smartphone.", key='intro_message_2', logo=st.session_state.assistant_logo)
+    streamlit_chat.message(
+        f"To start our postmortem chat, I'll need an {st.session_state.game_name} player number. I'll use it to find player's latest {st.session_state.game_name} club game. It will be the subject of our chat.", key='intro_message_3', logo=st.session_state.assistant_logo)
+    streamlit_chat.message(
+        f"Enter any {st.session_state.game_name} player number in the left sidebar.", key='intro_message_4', logo=st.session_state.assistant_logo)
+    streamlit_chat.message(
+        "I'm just a Proof of Concept so don't double me.", key='intro_message_5', logo=st.session_state.assistant_logo)
+    return
+
+
+# Everything below here is the standard mlBridge code.
+
+
+def perform_hand_augmentations(df, sd_productions):
+    """Wrapper for backward compatibility"""
+    def hand_augmentation_work(df, progress, **kwargs):
+        augmenter = mlBridgeAugmentLib.HandAugmenter(
+            df, 
+            {}, 
+            sd_productions=kwargs.get('sd_productions'),
+            progress=progress
+        )
+        return augmenter.perform_hand_augmentations()
+    
+    return streamlitlib.perform_queued_work(
+        df, 
+        hand_augmentation_work, 
+        work_description="Hand analysis",
+        sd_productions=sd_productions
+    )
+
+
+def augment_df(df):
+    with st.spinner('Creating hand data...'):
+        # with safe_resource(): # perform_hand_augmentations() requires a lock because of double dummy solver dll
+        #     # todo: break apart perform_hand_augmentations into dd and sd augmentations to speed up and stqdm()\
+        #     progress = st.progress(0) # pass progress bar to augmenter to show progress of long running operations
+        #     augmenter = mlBridgeAugmentLib.HandAugmenter(df,{},sd_productions=st.session_state.single_dummy_sample_count,progress=progress)
+        #     df = augmenter.perform_hand_augmentations()
+        df = perform_hand_augmentations(df, st.session_state.single_dummy_sample_count)
+    with st.spinner('Augmenting with result data...'):
+        augmenter = mlBridgeAugmentLib.ResultAugmenter(df,{})
+        df = augmenter.perform_result_augmentations()
+    with st.spinner('Augmenting with DD and SD data...'):
+        augmenter = mlBridgeAugmentLib.DDSDAugmenter(df)
+        df = augmenter.perform_dd_sd_augmentations()
+    with st.spinner('Augmenting with matchpoints and percentages data...'):
+        augmenter = mlBridgeAugmentLib.MatchPointAugmenter(df)
+        df = augmenter.perform_matchpoint_augmentations()
+    return df
 
 
 def read_configs():
@@ -567,16 +613,22 @@ def read_configs():
             favorites = json.load(f)
         st.session_state.favorites = favorites
         #st.session_state.vetted_prompts = get_vetted_prompts_from_favorites(favorites)
+    else:
+        st.session_state.favorites = None
 
     if st.session_state.player_id_custom_favorites_file.exists():
         with open(st.session_state.player_id_custom_favorites_file, 'r') as f:
             player_id_favorites = json.load(f)
         st.session_state.player_id_favorites = player_id_favorites
+    else:
+        st.session_state.player_id_favorites = None
 
     if st.session_state.debug_favorites_file.exists():
         with open(st.session_state.debug_favorites_file, 'r') as f:
             debug_favorites = json.load(f)
         st.session_state.debug_favorites = debug_favorites
+    else:
+        st.session_state.debug_favorites = None
 
     # display missing prompts in favorites
     if 'missing_in_summarize' not in st.session_state:
@@ -598,9 +650,9 @@ def read_configs():
         print("\nItems in Vetted_Prompts but not in Summarize.prompts:")
         for item in st.session_state.missing_in_summarize:
             print(f"- {item}: {vetted_prompts[item]['title']}")
+    return
 
 
-# todo: similar to prompt_keyword_replacements
 def process_prompt_macros(sql_query):
     replacements = {
         '{Player_Direction}': st.session_state.player_direction,
@@ -609,6 +661,8 @@ def process_prompt_macros(sql_query):
         '{Opponent_Pair_Direction}': st.session_state.opponent_pair_direction
     }
     for old, new in replacements.items():
+        if new is None:
+            continue
         sql_query = sql_query.replace(old, new)
     return sql_query
 
@@ -619,21 +673,21 @@ def write_report():
     st.session_state.main_section_container = st.container(border=True)
     with st.session_state.main_section_container:
         report_title = f"Bridge Game Postmortem Report Personalized for {st.session_state.player_name}" # can't use (st.session_state.player_id) because of href link below.
-        report_creator = "Created by https://pbn.postmortem.chat"
+        report_creator = f"Created by https://{st.session_state.game_name}.postmortem.chat"
         report_event_info = f"{st.session_state.game_description} (event id {st.session_state.session_id})."
-        #report_acbl_results_page = f"ACBL Results Page: {st.session_state.acbl_results_page}"
+        report_game_results_webpage = f"Results Page: {st.session_state.game_url}"
         report_your_match_info = f"Your pair was {st.session_state.pair_id}{st.session_state.pair_direction} in section {st.session_state.section_name}. You played {st.session_state.player_direction}. Your partner was {st.session_state.partner_name} ({st.session_state.partner_id}) who played {st.session_state.partner_direction}."
         st.markdown(f"### {report_title}")
         st.markdown(f"##### {report_creator}")
         st.markdown(f"#### {report_event_info}")
-        #st.markdown(f"##### {report_acbl_results_page}")
+        st.markdown(f"##### {report_game_results_webpage}")
         st.markdown(f"#### {report_your_match_info}")
         pdf_assets = st.session_state.pdf_assets
         pdf_assets.clear()
         pdf_assets.append(f"# {report_title}")
         pdf_assets.append(f"#### {report_creator}")
         pdf_assets.append(f"### {report_event_info}")
-        #pdf_assets.append(f"#### {report_acbl_results_page}")
+        pdf_assets.append(f"#### {report_game_results_webpage}")
         pdf_assets.append(f"### {report_your_match_info}")
         st.session_state.button_title = 'Summarize' # todo: generalize to all buttons!
         selected_button = st.session_state.favorites['Buttons'][st.session_state.button_title]
@@ -671,6 +725,7 @@ def write_report():
             mime='application/octet-stream',
             key='personalized_report_download_button'):
         st.warning('Personalized report downloaded.')
+    return
 
 
 def ask_sql_query():
@@ -690,115 +745,119 @@ def create_ui():
     ask_sql_query()
 
 
-def reset_data():
-    # Refreshable defaults
-    st.session_state.app_datetime = datetime.fromtimestamp(pathlib.Path(__file__).stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z')
-    #pbn_filename_default = 'DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'  # local filename
-    st.session_state.single_dummy_sample_count_default = 2  # number of random deals to generate for calculating single dummy probabilities. Use smaller number for testing.
-    st.session_state.single_dummy_sample_count = st.session_state.single_dummy_sample_count_default
-    st.session_state.show_sql_query_default = True
-    st.session_state.show_sql_query = st.session_state.show_sql_query_default
-    st.session_state.sql_query_mode = False
-    st.session_state.save_intermediate_files = False # leave False for now. saving intermediate files presents problems with persistance. where to do it? how to clean up? how to handle multiple users?
-    st.session_state.recommended_board_max = 10000
+def initialize_session_state():
+    st.set_page_config(layout="wide")
+    # Add this auto-scroll code
+    streamlitlib.widen_scrollbars()
+
+    if platform.system() == 'Windows': # ugh. this hack is required because torch somehow remembers the platform where the model was created. Must be a bug. Must lie to torch.
+        pathlib.PosixPath = pathlib.WindowsPath
+    else:
+        pathlib.WindowsPath = pathlib.PosixPath
     
-    st.session_state.group_id_default = 0 # numeric or string?
-    st.session_state.session_id_default = None # numeric or string?
-    st.session_state.player_id_default = '0'# numeric or string?
-    st.session_state.player_name = 'Player'
-    st.session_state.partner_id_default = None # numeric or string?
-    st.session_state.player_direction_default = 'N'
-    st.session_state.partner_direction_default = 'S'
-    st.session_state.pair_id_default = None
-    st.session_state.pair_direction_default = 'NS'
-    st.session_state.opponent_pair_direction_default = 'EW'
-    st.session_state.game_description = 'Unknown game'
-    st.session_state.game_url_default = None
-    st.session_state.game_date_default = 'Unknown date' #pd.to_datetime(st.session_state.df['Date'].iloc[0]).strftime('%Y-%m-%d')
+    if 'player_id' in st.query_params:
+        player_id = st.query_params['player_id']
+        if not isinstance(player_id, str):
+            st.error(f'player_id must be a string {player_id}')
+            st.stop()
+        st.session_state.player_id = player_id
+    else:
+        st.session_state.player_id = None
 
-    st.session_state.group_id = st.session_state.group_id_default
-    st.session_state.session_id = st.session_state.session_id_default
-    st.session_state.section_name = "unknown section"
-    st.session_state.pair_id = st.session_state.pair_id_default
-    st.session_state.player_id = st.session_state.player_id_default
-    st.session_state.partner_id = st.session_state.partner_id_default
-    st.session_state.partner_name = 'Partner'
-    st.session_state.player_direction = st.session_state.player_direction_default
-    st.session_state.partner_direction = st.session_state.partner_direction_default
-    st.session_state.pair_direction = st.session_state.pair_direction_default
-    st.session_state.opponent_pair_direction = st.session_state.opponent_pair_direction_default
-    st.session_state.game_url = st.session_state.game_url_default
-    st.session_state.game_date = st.session_state.game_date_default
-    st.session_state.use_historical_data = False # use historical data from file or get from url
-    st.session_state.pdf_assets = []
-    #st.session_state.df = None
+    first_time_defaults = {
+        'first_time': True,
+        'single_dummy_sample_count': 10,
+        'show_sql_query': True, # os.getenv('STREAMLIT_ENV') == 'development',
+        'use_historical_data': False,
+        'do_not_cache_df': True, # todo: set to True for production
+        'con': duckdb.connect(),
+        'con_register_name': 'self',
+        'main_section_container': st.empty(),
+        'app_datetime': datetime.fromtimestamp(pathlib.Path(__file__).stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z'),
+        'current_datetime': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    for key, value in first_time_defaults.items():
+        st.session_state[key] = value
 
-    st.session_state.default_sql_query = "SELECT PBN, Hand_N, Suit_N_S, Board, Contract, Result, Tricks, Score_NS, DDScore_NS, ParScore_NS, ParScore_Diff_NS, EV_NS_Max, EV_NS_MaxCol, EV_MaxScore_Diff_NS FROM self"
+    reset_game_data()
+    initialize_website_specific()
+
+    return
+
+
+def reset_game_data():
+
+    # Default values for session state variables
+    reset_defaults = {
+        'game_description_default': None,
+        'group_id_default': None,
+        'session_id_default': None,
+        'section_name_default': None,
+        'player_id_default': None,
+        'partner_id_default': None,
+        'player_name_default': None,
+        'partner_name_default': None,
+        'player_direction_default': None,
+        'partner_direction_default': None,
+        'pair_id_default': None,
+        'pair_direction_default': None,
+        'opponent_pair_direction_default': None,
+    }
+    
+    # Initialize default values if not already set
+    for key, value in reset_defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+    
+    # Initialize additional session state variables that depend on defaults.
+    reset_session_vars = {
+        'df': None,
+        'game_description': st.session_state.game_description_default,
+        'group_id': st.session_state.group_id_default,
+        'session_id': st.session_state.session_id_default,
+        'section_name': st.session_state.section_name_default,
+        'player_id': st.session_state.player_id_default,
+        'partner_id': st.session_state.partner_id_default,
+        'player_name': st.session_state.player_name_default,
+        'partner_name': st.session_state.partner_name_default,
+        'player_direction': st.session_state.player_direction_default,
+        'partner_direction': st.session_state.partner_direction_default,
+        'pair_id': st.session_state.pair_id_default,
+        'pair_direction': st.session_state.pair_direction_default,
+        'opponent_pair_direction': st.session_state.opponent_pair_direction_default,
+        #'sidebar_loaded': False,
+        'analysis_started': False,   # new flag for analysis sidebar rewrite
+        'vetted_prompts': [],
+        'pdf_assets': [],
+        'sql_query_mode': False,
+        'sql_queries': [],
+        'game_urls_d': {},
+        'tournament_session_urls_d': {},
+    }
+    
+    for key, value in reset_session_vars.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+    return
+
+
+def app_info():
+    st.caption(f"Project lead is Robert Salita research@AiPolice.org. Code written in Python. UI written in streamlit. Data engine is polars. Query engine is duckdb. Bridge lib is endplay. Self hosted using Cloudflare Tunnel. Repo:https://github.com/BSalita/ffbridge-postmortem")
+    st.caption(
+        f"App:{st.session_state.app_datetime} Python:{'.'.join(map(str, sys.version_info[:3]))} Streamlit:{st.__version__} Pandas:{pd.__version__} polars:{pl.__version__} endplay:{endplay.__version__} Query Params:{st.query_params.to_dict()}")
+    return
 
 
 def main():
-
-    # first time only defaults
-    if 'first_time_only_initialized' not in st.session_state:
-        st.session_state.first_time_only_initialized = True
-        st.set_page_config(layout="wide")
-        #streamlitlib.widen_scrollbars() # removed because scrollbars squeezes out a one row dataframe in AgGrid() and st.dataframe()
-
-        st.session_state.assistant_logo = 'https://github.com/BSalita/Bridge_Game_Postmortem_Chatbot/blob/main/assets/logo_assistant.gif?raw=true' # 🥸 todo: put into config. must have raw=true for github url.
-        st.session_state.guru_logo = 'https://github.com/BSalita/Bridge_Game_Postmortem_Chatbot/blob/main/assets/logo_guru.png?raw=true' # 🥷todo: put into config file. must have raw=true for github url.
-
-        # Create connection
-        st.session_state.con = duckdb.connect()
-    
-        rootPath = pathlib.Path('e:/bridge/data')
-        acblPath = rootPath.joinpath('acbl')
-        bboPath = rootPath.joinpath('bbo')
-        dataPath = bboPath.joinpath('data')
-        biddingPath = bboPath.joinpath('bidding')
-
-        reset_data()
-        # # takes 10m
-        # bbo_eval_bidding_tables_d_filename = 'bbo_eval_bidding_tables_d.pkl'
-        # bbo_eval_bidding_tables_d_file = biddingPath.joinpath(bbo_eval_bidding_tables_d_filename)
-        # with open(bbo_eval_bidding_tables_d_file, 'rb') as f:
-        #     st.session_state.bt_prior_bids_to_bt_entry_d, st.session_state.bt_bid_to_next_bids_d = pickle.load(f)
-        # print(f"Loaded {bbo_eval_bidding_tables_d_filename}: size:{bbo_eval_bidding_tables_d_file.stat().st_size}")
-
-        # # takes 1s per 1m rows.
-        # # todo: evaluated_expressions_d is probably obsolete as its concatenated into train_df.
-        # bbo_eval_bidding_tables_d_filename = 'bbo_bidding_tables_dicts.pkl'
-        # bbo_eval_bidding_tables_d_file = dataPath.joinpath(bbo_eval_bidding_tables_d_filename)
-        # with open(bbo_eval_bidding_tables_d_file, 'rb') as f:
-        #     #evaluated_expressions_d, exprStr_to_exprID_d = pickle.load(f)
-        #     _, st.session_state.exprStr_to_exprID_d = pickle.load(f)
-        # print(f"Loaded {bbo_eval_bidding_tables_d_filename}: size:{bbo_eval_bidding_tables_d_file.stat().st_size}")
-        # #print(f"{len(evaluated_expressions_d)=} {len(exprStr_to_exprID_d)=}")
-        # print(f"{len(st.session_state.exprStr_to_exprID_d)=}")
-
-
-    if 'df' in st.session_state:
-        st.session_state.con.register('self', st.session_state.df)
-        create_ui()
-    else:
+    if 'first_time' not in st.session_state:
+        initialize_session_state()
         create_sidebar()
-        # else:
-
-        #     create_sidebar()
-        #     change_game_state()
-
-        #     # personalize to player, partner, opponents, etc.
-        #     st.session_state.df = filter_dataframe(st.session_state.df, st.session_state.group_id, st.session_state.session_id, st.session_state.player_id, st.session_state.partner_id)
-
-        #     # Register DataFrame as 'results' view
-        #     st.session_state.con.register('self', st.session_state.df)
-
-        #     # ShowDataFrameTable(df, key='everything_df_key', query='SELECT Board, Pct_NS, Pct_EW, MP_NS, MP_EW FROM self')
+    else:
+        create_ui()
+    return
 
 
-        #     st.session_state.con.register('self', st.session_state.df)
-        #     st.dataframe(st.session_state.df) # todo: using st.dataframe() because AgGrid() doesn't properly show 1 row of data.
-        #     #ShowDataFrameTable(st.session_state.df, query=st.session_state.default_sql_query, key='show_default_query_key')
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
+
