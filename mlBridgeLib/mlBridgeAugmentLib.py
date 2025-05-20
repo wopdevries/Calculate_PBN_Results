@@ -1,4 +1,3 @@
-
 # contains functions to augment df with additional columns
 # mostly polars functions
 
@@ -10,6 +9,8 @@
 import polars as pl
 from collections import defaultdict
 import sys
+import pathlib
+import mlBridgeLib.mlBridgeLib as mlBridgeLib
 import time
 
 import endplay # for __version__
@@ -18,7 +19,13 @@ from endplay.types import Deal, Contract, Denom, Player, Penalty, Vul
 from endplay.dds import calc_dd_table, calc_all_tables, par
 from endplay.dealer import generate_deals
 
-import mlBridgeLib
+from mlBridgeLib.mlBridgeLib import (
+    NESW, SHDC, NS_EW,
+    PlayerDirectionToPairDirection,
+    NextPosition,
+    PairDirectionToOpponentPairDirection,
+    score
+)
 
 
 def create_hand_nesw_columns(df):    
@@ -66,10 +73,10 @@ def create_suit_nesw_columns(df):
 def OHE_Hands(hands_bin):
     handsbind = defaultdict(list)
     for h in hands_bin:
-        for direction,nesw in zip(mlBridgeLib.NESW,h):
+        for direction,nesw in zip(NESW,h):
             assert nesw[0] is not None and nesw[1] is not None
             handsbind['_'.join(['HB',direction])].append(nesw[0]) # todo: int(nesw[0],2)) # convert binary string to base 2 int
-            #for suit,shdc in zip(mlBridgeLib.SHDC,nesw[1]):
+            #for suit,shdc in zip(SHDC,nesw[1]):
             #    assert shdc is not None
             #    handsbind['_'.join(['HCP',direction,suit])].append(shdc)
     return handsbind
@@ -77,15 +84,15 @@ def OHE_Hands(hands_bin):
 
 # generic function to augment metrics by suits
 def Augment_Metric_By_Suits(metrics,metric,dtype=pl.UInt8):
-    for d,direction in enumerate(mlBridgeLib.NESW):
-        for s,suit in  enumerate(mlBridgeLib.SHDC):
+    for d,direction in enumerate(NESW):
+        for s,suit in  enumerate(SHDC):
             metrics = metrics.with_columns(
                 metrics[metric].map_elements(lambda x: x[1][d][0],return_dtype=dtype).alias('_'.join([metric,direction])),
                 metrics[metric].map_elements(lambda x: x[1][d][1][s],return_dtype=dtype).alias('_'.join([metric,direction,suit]))
             )
-    for direction in mlBridgeLib.NS_EW:
+    for direction in NS_EW:
         metrics = metrics.with_columns((metrics['_'.join([metric,direction[0]])]+metrics['_'.join([metric,direction[1]])]).cast(dtype).alias('_'.join([metric,direction])))
-        for s,suit in  enumerate(mlBridgeLib.SHDC):
+        for s,suit in  enumerate(SHDC):
             metrics = metrics.with_columns((metrics['_'.join([metric,direction[0],suit])]+metrics['_'.join([metric,direction[1],suit])]).cast(dtype).alias('_'.join([metric,direction,suit])))
     #display(metrics.describe())
     return metrics # why is it necessary to return metrics? Isn't it just df?
@@ -298,14 +305,14 @@ def calculate_single_dummy_probabilities(deal, produce=100):
 # takes 1000 seconds for 100 sd calcs, or 10 sd calcs per second.
 def calculate_sd_probs(df, hrs_d, sd_productions=100, progress=None):
 
-    # calculate single dummy probabilities. if already calculated use cache value else update cache with new result.
+    # calculate single dummy probabilities. if already calculated use cache value else update e with new result.
     sd_dfs_d = {}
     unique_pbns = df['PBN'].unique(maintain_order=True) # todo: unique and not cached: if pbn not in hrs_d or 'SD' not in hrs_d[pbn] then calculate
     #print(unique_df)
     for i,pbn in enumerate(unique_pbns):
         if progress:
             percent_complete = int(i*100/len(unique_pbns))
-            progress.progress(percent_complete,f"{percent_complete}%: Single dummies calculated for {i} of {len(unique_pbns)} unique deals using {sd_productions} samples per deal. This step takes 1 minute...")
+            progress.progress(percent_complete,f"{percent_complete}%: Single dummies calculated for {i} of {len(unique_pbns)} unique deals using {sd_productions} samples per deal. This step takes 30 seconds...")
         else:
             if i < 10 or i % 10000 == 0:
                 percent_complete = int(i*100/len(unique_pbns))
@@ -574,7 +581,7 @@ def Perform_Legacy_Renames(df):
         pl.col('W').alias('Player_Name_W'),
         pl.col('Declarer_Name').alias('Name_Declarer'),
         pl.col('Declarer_ID').alias('Number_Declarer'), #  todo: rename to 'Declarer_ID'?
-        pl.col('Declarer_Direction').replace_strict(mlBridgeLib.PlayerDirectionToPairDirection).alias('Declarer_Pair_Direction'),
+        pl.col('Declarer_Direction').replace_strict(PlayerDirectionToPairDirection).alias('Declarer_Pair_Direction'),
         pl.concat_list(['N', 'S']).alias('Player_Names_NS'),
         pl.concat_list(['E', 'W']).alias('Player_Names_EW'),
         # EV legacy renames
@@ -971,19 +978,6 @@ class HandAugmenter:
                 convert_contract_to_DD_Score_Ref,
                 self.df
             )
-
-    # todo: move this to contract established class
-    def _create_score_columns(self):
-        if 'Score_NS' not in self.df.columns:
-            self.df = self._time_operation(
-                "convert_score_to_score",
-                lambda df: df.with_columns([
-                    pl.col('Score').alias('Score_NS'),
-                    pl.col('Score').neg().alias('Score_EW')
-                ]),
-                self.df
-            )
-
     # todo: move this to contract established class
     def _create_ev_columns(self):
         max_expressions = []
@@ -1064,8 +1058,56 @@ class HandAugmenter:
             .alias(f'EV_{pd}_{dd}_{s}_{l}')
         ]
 
+    def perform_hand_augmentations(self):
+        """Main method to perform all hand augmentations"""
+        self._add_default_columns()
+        self._create_hand_columns()
+        self._create_dealer()
+        # todo: move following to contract established class
+        self._process_scores_and_tricks()
+        self._process_contract_columns()
+        self._create_contract_types()
+        self._create_declarer_columns()
+        self._create_result_columns()
+        self._create_dd_columns()
+        self._create_ev_columns()
+        return self.df
+
+
+class ScoreAugmenter:
+    def __init__(self, df):
+        self.df = df
+
+    def _time_operation(self, operation_name, func, *args, **kwargs):
+        t = time.time()
+        result = func(*args, **kwargs)
+        print(f"{operation_name}: time:{time.time()-t} seconds")
+        return result
+
     # todo: move this to contract established class
-    def _create_diff_columns(self):
+    def _create_score_columns(self):
+        if 'Score_NS' not in self.df.columns:
+            self.df = self._time_operation(
+                "convert_score_to_score",
+                # lambda df: df.with_columns([
+                #     pl.col('Score').alias('Score_NS'),
+                #     pl.col('Score').neg().alias('Score_EW')
+                # ]),
+                lambda df: df.with_columns([
+                    pl.when(pl.col('Declarer_Direction').is_in(['N', 'S']))
+                    .then(pl.col('Score'))
+                    .otherwise(-pl.col('Score'))
+                    .alias('Score_NS'),
+                    pl.when(pl.col('Declarer_Direction').is_in(['E', 'W']))
+                    .then(pl.col('Score'))
+                    .otherwise(-pl.col('Score'))
+                    .alias('Score_EW')
+                ]),
+                self.df
+            )
+
+    # todo: move this to contract established class
+    def _create_score_diff_columns(self):
         # First create the initial diff columns
         self.df = self._time_operation(
             "create_initial_diff_columns",
@@ -1088,22 +1130,11 @@ class HandAugmenter:
             self.df
         )
 
-    def perform_hand_augmentations(self):
-        """Main method to perform all hand augmentations"""
-        self._add_default_columns()
-        self._create_hand_columns()
-        self._create_dealer()
-        # todo: move following to contract established class
-        self._process_scores_and_tricks()
-        self._process_contract_columns()
-        self._create_contract_types()
-        self._create_declarer_columns()
-        self._create_result_columns()
-        self._create_dd_columns()
+    def perform_score_augmentations(self):
         self._create_score_columns()
-        self._create_ev_columns()
-        self._create_diff_columns()
+        self._create_score_diff_columns()
         return self.df
+    
 
 class ResultAugmenter:
     def __init__(self, df, hrs_d=None):
@@ -1244,8 +1275,8 @@ class ResultAugmenter:
 
     def _create_max_suit_lengths(self):
         if 'SL_Max_NS' not in self.df.columns:
-            sl_cols = [('_'.join(['SL_Max',d]), ['_'.join(['SL',d,s]) for s in mlBridgeLib.SHDC]) 
-                      for d in mlBridgeLib.NS_EW]
+            sl_cols = [('_'.join(['SL_Max',d]), ['_'.join(['SL',d,s]) for s in SHDC]) 
+                      for d in NS_EW]
             for d in sl_cols:
                 self.df = self._time_operation(
                     f"create {d[0]}",
@@ -1439,7 +1470,6 @@ class DDSDAugmenter:
     def _create_position_columns(self):
         assert 'Direction_OnLead' not in self.df.columns
         assert 'Opponent_Pair_Direction' not in self.df.columns
-        assert 'Score_Declarer' not in self.df.columns
         assert 'Direction_Dummy' not in self.df.columns
         assert 'OnLead' not in self.df.columns
         assert 'Direction_NotOnLead' not in self.df.columns
@@ -1453,7 +1483,7 @@ class DDSDAugmenter:
         self.df = self._time_operation(
             "create position columns",
             lambda df: df.with_columns([
-                pl.col('Declarer_Direction').replace_strict(mlBridgeLib.NextPosition).alias('Direction_OnLead'),
+                pl.col('Declarer_Direction').replace_strict(NextPosition).alias('Direction_OnLead'),
             ])
             .with_columns([
                 pl.concat_str([
@@ -1503,15 +1533,15 @@ class DDSDAugmenter:
                 ]
             ])
             .with_columns([
-                pl.col('Declarer_Pair_Direction').replace_strict(mlBridgeLib.PairDirectionToOpponentPairDirection).alias('Opponent_Pair_Direction'),
-                pl.col('Direction_OnLead').replace_strict(mlBridgeLib.NextPosition).alias('Direction_Dummy'),
+                pl.col('Declarer_Pair_Direction').replace_strict(PairDirectionToOpponentPairDirection).alias('Opponent_Pair_Direction'),
+                pl.col('Direction_OnLead').replace_strict(NextPosition).alias('Direction_Dummy'),
                 pl.struct(['Direction_OnLead', 'Player_ID_N', 'Player_ID_E', 'Player_ID_S', 'Player_ID_W']).map_elements(
                     lambda r: None if r['Direction_OnLead'] is None else r[f'Player_ID_{r["Direction_OnLead"]}'],
                     return_dtype=pl.String
                 ).alias('OnLead'),
             ])
             .with_columns([
-                pl.col('Direction_Dummy').replace_strict(mlBridgeLib.NextPosition).alias('Direction_NotOnLead'),
+                pl.col('Direction_Dummy').replace_strict(NextPosition).alias('Direction_NotOnLead'),
                 pl.struct(['Direction_Dummy', 'Player_ID_N', 'Player_ID_E', 'Player_ID_S', 'Player_ID_W']).map_elements(
                     lambda r: None if r['Direction_Dummy'] is None else r[f'Player_ID_{r["Direction_Dummy"]}'],
                     return_dtype=pl.String
@@ -1551,7 +1581,7 @@ class DDSDAugmenter:
                     .alias('Computed_Score_Declarer'),
 
                 pl.struct(['Contract', 'Result', 'Score_NS', 'BidLvl', 'BidSuit', 'Dbl','Declarer_Direction', 'Vul_Declarer']).map_elements(
-                    lambda r: None if r['Contract'] is None else 0 if r['Contract'] == 'PASS' else r['Score_NS'] if r['Result'] is None else mlBridgeLib.score(
+                    lambda r: None if r['Contract'] is None else 0 if r['Contract'] == 'PASS' else r['Score_NS'] if r['Result'] is None else score(
                         r['BidLvl'] - 1, 'CDHSN'.index(r['BidSuit']), len(r['Dbl']), 'NESW'.index(r['Declarer_Direction']),
                         r['Vul_Declarer'], r['Result'], True),return_dtype=pl.Int16).alias('Computed_Score_Declarer2'),
             ]),

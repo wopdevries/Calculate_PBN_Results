@@ -2,23 +2,23 @@
     // Use IntelliSense to learn about possible attributes.
     // Hover to view descriptions of existing attributes.
     // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
-        "version": "0.2.0",
-        "configurations": [
-            {
-                "name": "Python: Streamlit",
-                "type": "debugpy",
-                "request": "launch",
-                "module": "streamlit",
-                "justMyCode": true,
-                "args": [
-                    "run",
-                    "CalculatePBNResults_Streamlit.py", // was "${file}"
-                ],
-                "env": {
-                    "STREAMLIT_APP": "${file}",
-                    "STREAMLIT_ENV": "development",
-                    //"STREAMLIT_QUERY_STRING": "player_number=2663279",
-                }
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Streamlit: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "streamlit",
+            "justMyCode": true,
+            "args": [
+                "run",
+                "calculate_pbn_results_streamlit.py", // was "${file}"
+            ],
+            "env": {
+                "STREAMLIT_APP": "calculate_pbn_results_streamlit.py",
+                "STREAMLIT_ENV": "development",
+                "STREAMLIT_QUERY_STRING": "",
             }
-        ]
+        }
+    ]
 }
