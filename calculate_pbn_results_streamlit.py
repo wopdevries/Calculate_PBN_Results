@@ -472,8 +472,8 @@ def Process_PBN(path_url,boards,df,everything_df,hrs_d={}):
 
     #display_experiments(df)
 
-    show_df = df[['index', 'passout', 'trump', 'PBN', 'Hand_N', 'Hand_E', 'Hand_S', 'Hand_W', 'Event', 'BCFlags', 'Room', 'Score', 'bid_type', 'bid_denom', 'bid_penalty', 'bid_level', 'bid_alertable', 'bid_announcement', 'play_rank', 'play_suit', 'Board', 'Dealer', 'Vul', 'iVul', 'Vul_NS', 'Vul_EW', 'Contract', 'BidLvl', 'BidSuit', 'Dbl', 'Declarer_Direction', 'Result', 'Tricks', 'Player_Name_N', 'Player_Name_E', 'Player_Name_S', 'Player_Name_W', 'Player_ID_N', 'Player_ID_E', 'Player_ID_S', 'Player_ID_W']]
-    st.dataframe(show_df)
+    #non_unique_columns_df = df[['index', 'passout', 'trump', 'PBN', 'Hand_N', 'Hand_E', 'Hand_S', 'Hand_W', 'Event', 'BCFlags', 'Room', 'Score', 'bid_type', 'bid_denom', 'bid_penalty', 'bid_level', 'bid_alertable', 'bid_announcement', 'play_rank', 'play_suit', 'Board', 'Dealer', 'Vul', 'iVul', 'Vul_NS', 'Vul_EW', 'Contract', 'BidLvl', 'BidSuit', 'Dbl', 'Declarer_Direction', 'Result', 'Tricks', 'Player_Name_N', 'Player_Name_E', 'Player_Name_S', 'Player_Name_W', 'Player_ID_N', 'Player_ID_E', 'Player_ID_S', 'Player_ID_W']]
+    #st.dataframe(non_unique_columns_df)
     return df
 
 
