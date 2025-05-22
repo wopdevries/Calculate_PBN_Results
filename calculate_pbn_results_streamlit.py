@@ -44,8 +44,10 @@ sys.path.append(str(pathlib.Path.cwd().joinpath('mlBridgeLib')))  # global # Req
 import streamlitlib
 from mlBridgeLib.mlBridgePostmortemLib import PostmortemBase
 import mlBridgeEndplayLib
-import mlBridgeAugmentLib
-#import mlBridgeBiddingLib
+from mlBridgeLib.mlBridgeAugmentLib import (
+    AllAugmentations,
+)#import mlBridgeBiddingLib
+
 
 
 # def create_augmented_df(df):
@@ -272,8 +274,6 @@ def change_game_state_PBN(file_data,url,path_url,boards,df,everything_df):
             if len(boards) == 0:
                 st.warning(f"{url} has no boards.")
                 return
-            if len(boards) > st.session_state.recommended_board_max:
-                st.warning(f"{url} has {len(boards)} boards. More than {st.session_state.recommended_board_max} boards may result in instability.")
     if st.session_state.save_intermediate_files:
         boards_url = pathlib.Path(path_url.stem+'_boards').with_suffix('.pkl')
         boards_path = pathlib.Path(boards_url)
@@ -286,151 +286,135 @@ def change_game_state_PBN(file_data,url,path_url,boards,df,everything_df):
 
 def change_game_state():
 
-    #with st.session_state.chat_container:
-    reset_game_data() # wipe out all game state data
-    st.session_state.session_id = 'unknown session'
-    st.session_state.group_id = 'unknown group'
-    st.session_state.player_id = 'unknown player'
-    st.session_state.partner_id = 'unknown partner'
-    # todo: temp - extract these from data!!!!!!!!!!!!
-    st.session_state.pair_direction = 'NS'
-    st.session_state.opponent_pair_direction = 'EW'
+    with st.spinner(f'Preparing Bridge Game Postmortem Report. Takes 2 minutes total...'):
+        #with st.session_state.chat_container:
+        reset_game_data() # wipe out all game state data
+        st.session_state.session_id = 'unknown session'
+        st.session_state.group_id = 'unknown group'
+        st.session_state.player_id = 'unknown player'
+        st.session_state.partner_id = 'unknown partner'
+        # todo: temp - extract these from data!!!!!!!!!!!!
+        st.session_state.pair_direction = 'NS'
+        st.session_state.opponent_pair_direction = 'EW'
 
-    url = st.session_state.create_sidebar_text_input_url_key.strip()
-    st.text(f"Selected URL: {url}") # using protocol:{get_url_protocol(url)}")
+        url = st.session_state.create_sidebar_text_input_url_key.strip()
+        st.text(f"Selected URL: {url}") # using protocol:{get_url_protocol(url)}")
 
-    if url is None or url == '' or (get_url_protocol(url) == 'file' and ('/' in url and '\\' in url and '&' in url)):
-        return
+        if url is None or url == '' or (get_url_protocol(url) == 'file' and ('/' in url and '\\' in url and '&' in url)):
+            return
 
-    path_url = pathlib.Path(url)
-    boards = None
-    df = None
-    everything_df = None
-    # todo: only local intermediate files implemented. is it possible to access them using a url? it gets complicated.
-    if url.endswith('_boards.pkl'):
-        if not path_url.exists():
-            st.warning(f"{url} does not exist.")
-            return
-        with st.spinner(f"Loading {url} ..."):
-            with open(path_url, 'rb') as f:
-                boards = pickle.load(f)
-        url = url.replace('_boards.pkl','')
         path_url = pathlib.Path(url)
-        Process_PBN(boards,df,everything_df,path_url)
-    elif url.endswith('_df.pkl'):
-        if not path_url.exists():
-            st.warning(f"{url} does not exist.")
-            return
-        with st.spinner(f"Loading {url} ..."):
-            with open(path_url, 'rb') as f:
-                df = pickle.load(f)
-        url = url.replace('_df.pkl','')
-        path_url = pathlib.Path(url)
-        Process_PBN(boards,df,everything_df,path_url)
-    elif url.endswith('_everythingdf.parquet'):
-        if not path_url.exists():
-            st.warning(f"{url} does not exist.")
-            return
-        with st.spinner(f"Loading {url} ..."):
-            everything_df = pl.read_parquet(path_url)
-        url = url.replace('_everythingdf.parquet','')
-        path_url = pathlib.Path(url)
-        Process_PBN(boards,df,everything_df,path_url)
-    else:
-        with st.spinner(f"Loading {url} ..."):
-            try:
-                of = fsspec.open(url, mode='r', encoding='utf-8')
-                with of as f:
-                    match path_url.suffix.lower():
-                        case '.pbn':
-                            file_data = f.read()
-                            boards = change_game_state_PBN(file_data,url,path_url,boards,df,everything_df)
-                        case '.lin':
-                            file_data = f.read()
-                            boards = change_game_state_LIN(file_data,url,path_url,boards,df,everything_df)
-                        case '.json':
-                            file_data = f.read()
-                            json_data = json.loads(file_data)
-                            json_df = pl.DataFrame(json_data)
-                            df = flatten_df(json_df)
-                            st.dataframe(df)
-                            return
-                            #pass
-                            # b = boards.unnest('Matches')
-                            # pl.DataFrame(b['Sessions'][0].struct.unnest())
-                            #boards = change_game_state_JSON(file_data,url,path_url,boards,df,everything_df)
-                        case _:
-                            st.error(f"Unsupported file type: {path_url.suffix}")
-                            return
-            except Exception as e:
-                st.error(f"Error opening or reading {url}: {e}")
+        boards = None
+        df = None
+        everything_df = None
+        # todo: only local intermediate files implemented. is it possible to access them using a url? it gets complicated.
+        if url.endswith('_boards.pkl'):
+            if not path_url.exists():
+                st.warning(f"{url} does not exist.")
                 return
-    if boards is None:
-        st.error(f"Unimplemented file type: {path_url.suffix}")
-        return # not yet implemented
+            with st.spinner(f"Loading {url} ..."):
+                with open(path_url, 'rb') as f:
+                    boards = pickle.load(f)
+            url = url.replace('_boards.pkl','')
+            path_url = pathlib.Path(url)
+            Process_PBN(boards,df,everything_df,path_url)
+        elif url.endswith('_df.pkl'):
+            if not path_url.exists():
+                st.warning(f"{url} does not exist.")
+                return
+            with st.spinner(f"Loading {url} ..."):
+                with open(path_url, 'rb') as f:
+                    df = pickle.load(f)
+            url = url.replace('_df.pkl','')
+            path_url = pathlib.Path(url)
+            Process_PBN(boards,df,everything_df,path_url)
+        elif url.endswith('_everythingdf.parquet'):
+            if not path_url.exists():
+                st.warning(f"{url} does not exist.")
+                return
+            with st.spinner(f"Loading {url} ..."):
+                everything_df = pl.read_parquet(path_url)
+            url = url.replace('_everythingdf.parquet','')
+            path_url = pathlib.Path(url)
+            Process_PBN(boards,df,everything_df,path_url)
+        else:
+            with st.spinner(f"Loading {url} ..."):
+                try:
+                    of = fsspec.open(url, mode='r', encoding='utf-8')
+                    with of as f:
+                        match path_url.suffix.lower():
+                            case '.pbn':
+                                file_data = f.read()
+                                boards = change_game_state_PBN(file_data,url,path_url,boards,df,everything_df)
+                            case '.lin':
+                                file_data = f.read()
+                                boards = change_game_state_LIN(file_data,url,path_url,boards,df,everything_df)
+                            case '.json':
+                                file_data = f.read()
+                                json_data = json.loads(file_data)
+                                json_df = pl.DataFrame(json_data)
+                                df = flatten_df(json_df)
+                                st.dataframe(df)
+                                return
+                                #pass
+                                # b = boards.unnest('Matches')
+                                # pl.DataFrame(b['Sessions'][0].struct.unnest())
+                                #boards = change_game_state_JSON(file_data,url,path_url,boards,df,everything_df)
+                            case _:
+                                st.error(f"Unsupported file type: {path_url.suffix}")
+                                return
+                except Exception as e:
+                    st.error(f"Error opening or reading {url}: {e}")
+                    return
+        if boards is None:
+            st.error(f"Unimplemented file type: {path_url.suffix}")
+            return # not yet implemented
 
-    st.session_state.df = Process_PBN(path_url,boards,df,everything_df)
-    st.session_state.df = filter_dataframe(st.session_state.df, st.session_state.group_id, st.session_state.session_id, st.session_state.player_id, st.session_state.partner_id)
-    assert st.session_state.df.select(pl.col(pl.Object)).is_empty(), f"Found Object columns: {[col for col, dtype in st.session_state.df.schema.items() if dtype == pl.Object]}"
-    st.session_state.con.register(st.session_state.con_register_name, st.session_state.df) # ugh, df['scores_l'] must be previously dropped otherwise this hangs. reason unknown.
+        st.session_state.df = Process_PBN(path_url,boards,df,everything_df)
+        st.session_state.df = filter_dataframe(st.session_state.df, st.session_state.group_id, st.session_state.session_id, st.session_state.player_id, st.session_state.partner_id)
+        assert st.session_state.df.select(pl.col(pl.Object)).is_empty(), f"Found Object columns: {[col for col, dtype in st.session_state.df.schema.items() if dtype == pl.Object]}"
+        st.session_state.con.register(st.session_state.con_register_name, st.session_state.df) # ugh, df['scores_l'] must be previously dropped otherwise this hangs. reason unknown.
 
     return
 
 
-
-def perform_hand_augmentations(df, sd_productions):
-    """Wrapper for backward compatibility"""
-    def hand_augmentation_work(df, progress, **kwargs):
-        augmenter = mlBridgeAugmentLib.HandAugmenter(
-            df, 
-            {}, 
-            sd_productions=kwargs.get('sd_productions'),
-            progress=progress
-        )
-        return augmenter.perform_hand_augmentations()
-    
-    return streamlitlib.perform_queued_work(
-        df, 
-        hand_augmentation_work, 
-        work_description="Hand analysis",
-        sd_productions=sd_productions
-    )
+# this version of perform_hand_augmentations_locked() uses self for class compatibility, older versions did not.
+def perform_hand_augmentations_queue(self, hand_augmentation_work):
+    return streamlitlib.perform_queued_work(self, hand_augmentation_work, "Hand analysis")
 
 
 def augment_df(df):
-    with st.spinner('Creating hand data...'):
-        # with safe_resource(): # perform_hand_augmentations() requires a lock because of double dummy solver dll
-        #     # todo: break apart perform_hand_augmentations into dd and sd augmentations to speed up and stqdm()\
-        #     progress = st.progress(0) # pass progress bar to augmenter to show progress of long running operations
-        #     augmenter = mlBridgeAugmentLib.HandAugmenter(df,{},sd_productions=st.session_state.single_dummy_sample_count,progress=progress)
-        #     df = augmenter.perform_hand_augmentations()
-        df = perform_hand_augmentations(df, st.session_state.single_dummy_sample_count)
-    with st.spinner('Augmenting with result data...'):
-        augmenter = mlBridgeAugmentLib.ResultAugmenter(df,{})
-        df = augmenter.perform_result_augmentations()
-    with st.spinner('Augmenting with contract data...'):
-        augmenter = mlBridgeAugmentLib.ScoreAugmenter(df)
-        df = augmenter.perform_score_augmentations()
-    with st.spinner('Augmenting with DD and SD data...'):
-        augmenter = mlBridgeAugmentLib.DDSDAugmenter(df)
-        df = augmenter.perform_dd_sd_augmentations()
-    with st.spinner('Augmenting with matchpoints and percentages data...'):
-        augmenter = mlBridgeAugmentLib.MatchPointAugmenter(df)
-        df = augmenter.perform_matchpoint_augmentations()
+    with st.spinner('Augmenting data...'):
+        augmenter = AllAugmentations(df,hrs_d={},sd_productions=st.session_state.single_dummy_sample_count,progress=st.progress(0),lock_func=perform_hand_augmentations_queue)
+        df = augmenter.perform_all_augmentations()
+    # with st.spinner('Creating hand data...'):
+    #     augmenter = HandAugmenter(df,{},sd_productions=st.session_state.single_dummy_sample_count,progress=st.progress(0),lock_func=perform_hand_augmentations_queue)
+    #     df = augmenter.perform_hand_augmentations()
+    # with st.spinner('Augmenting with result data...'):
+    #     augmenter = ResultAugmenter(df,{})
+    #     df = augmenter.perform_result_augmentations()
+    # with st.spinner('Augmenting with contract data...'):
+    #     augmenter = ScoreAugmenter(df)
+    #     df = augmenter.perform_score_augmentations()
+    # with st.spinner('Augmenting with DD and SD data...'):
+    #     augmenter = DDSDAugmenter(df)
+    #     df = augmenter.perform_dd_sd_augmentations()
+    # with st.spinner('Augmenting with matchpoints and percentages data...'):
+    #     augmenter = MatchPointAugmenter(df)
+    #     df = augmenter.perform_matchpoint_augmentations()
     return df
 
 
 def Process_PBN(path_url,boards,df,everything_df,hrs_d={}):
-    with st.spinner("Converting PBN to Endplay Dataframe ..."):
+    with st.spinner("Creating dataframe ..."):
         df = mlBridgeEndplayLib.endplay_boards_to_df({path_url:boards})
-    with st.spinner("Augmenting with hand data..."):
         df = mlBridgeEndplayLib.convert_endplay_df_to_mlBridge_df(df)
         #st.write("After endplay_boards_to_df")
         #ShowDataFrameTable(df, key=f"process_endplay_boards_to_df_key")
-        pmb = PBNResultsCalculator()
-        df = augment_df(df)
-        #st.write("After Perform_DD_SD_Augmentations")
-        #ShowDataFrameTable(df, key=f"Perform_DD_SD_Augmentations_key")
+    pmb = PBNResultsCalculator()
+    df = augment_df(df)
+    #st.write("After Perform_DD_SD_Augmentations")
+    #ShowDataFrameTable(df, key=f"Perform_DD_SD_Augmentations_key")
     # with st.spinner("Creating Bidding Tables. Very slow. Takes 12 minutes ..."): # todo: make faster. update message.
     #     expression_evaluator = mlBridgeBiddingLib.ExpressionEvaluator()
     #     df = expression_evaluator.create_bidding_table_df(df,st.session_state.bt_prior_bids_to_bt_entry_d)
