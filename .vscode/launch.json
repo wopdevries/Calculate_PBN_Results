@@ -5,7 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Streamlit: Current File",
+            "name": "Streamlit: calculate_pbn_results_streamlit",
             "type": "debugpy",
             "request": "launch",
             "module": "streamlit",

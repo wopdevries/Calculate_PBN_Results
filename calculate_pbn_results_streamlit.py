@@ -385,8 +385,8 @@ def perform_hand_augmentations_queue(self, hand_augmentation_work):
 
 def augment_df(df):
     with st.spinner('Augmenting data...'):
-        augmenter = AllAugmentations(df,hrs_d={},sd_productions=st.session_state.single_dummy_sample_count,progress=st.progress(0),lock_func=perform_hand_augmentations_queue)
-        df = augmenter.perform_all_augmentations()
+        augmenter = AllAugmentations(df,None,sd_productions=st.session_state.single_dummy_sample_count,progress=st.progress(0),lock_func=perform_hand_augmentations_queue)
+        df, hrs_cache_df = augmenter.perform_all_augmentations()
     # with st.spinner('Creating hand data...'):
     #     augmenter = HandAugmenter(df,{},sd_productions=st.session_state.single_dummy_sample_count,progress=st.progress(0),lock_func=perform_hand_augmentations_queue)
     #     df = augmenter.perform_hand_augmentations()
@@ -408,6 +408,7 @@ def augment_df(df):
 def Process_PBN(path_url,boards,df,everything_df,hrs_d={}):
     with st.spinner("Creating dataframe ..."):
         df = mlBridgeEndplayLib.endplay_boards_to_df({path_url:boards})
+        st.dataframe(df) # todo: temp!!!!!!!!!!!
         df = mlBridgeEndplayLib.convert_endplay_df_to_mlBridge_df(df)
         #st.write("After endplay_boards_to_df")
         #ShowDataFrameTable(df, key=f"process_endplay_boards_to_df_key")
