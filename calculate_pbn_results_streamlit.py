@@ -533,7 +533,7 @@ def create_sidebar():
     #default_url = r'file://c:\sw/bridge\ML-Contract-Bridge\src\Calculate_PBN_Results/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
     #default_url = r'file://DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
     #default_url = 'https://raw.githubusercontent.com/BSalita/Calculate_PBN_Results/master/DDS_Camrose24_1- BENCAM22 v WBridge5.pbn'
-    default_url = 'PJ  wop.pbn' #'1746217537-NzYzEYivsA@250502.PBN' # '3494191054-1682343601-bsalita.lin'
+    default_url = 'DDS_Camrose24_1- BENCAM22 v WBridge5.pbn' #'1746217537-NzYzEYivsA@250502.PBN' # '3494191054-1682343601-bsalita.lin'
     #default_url = 'GIB-Thorvald-8638-2024-08-23.pbn'
     st.sidebar.text_input('Enter URL:', default_url, on_change=change_game_state, key='create_sidebar_text_input_url_key', help='Enter a URL or pathless local file name.') # , on_change=change_game_state
     # using css to change button color for the entire button width. The color was choosen to match the the restrictive text colorizer (:green-background[Go]) used in st.info() below.
