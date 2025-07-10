@@ -693,17 +693,17 @@ def initialize_website_specific():
     st.session_state.savedModelsPath = st.session_state.rootPath.joinpath('SavedModels')
 
     streamlit_chat.message(
-        f"Hi. I'm Morty. Your friendly postmortem chatbot. I only want to chat about {st.session_state.game_name} pair matchpoint games using a Mitchell movement and not shuffled.", key='intro_message_1', logo=st.session_state.assistant_logo)
+        f"Hoi. Ik ben Morty. Jouw vriendelijke postmortem chatbot. Ik wil alleen chatten over de ingegeven PBN spellen.", key='intro_message_1', logo=st.session_state.assistant_logo)
     streamlit_chat.message(
-        "I'm optimized for large screen devices such as a notebook or monitor. Do not use a smartphone.", key='intro_message_2', logo=st.session_state.assistant_logo)
+        "Ik ben geoptimaliseerd voor grote scherm apparaten zoals een laptop of monitor. Gebruik geen smartphone.", key='intro_message_2', logo=st.session_state.assistant_logo)
     #streamlit_chat.message(
     #    f"To start our postmortem chat, I'll need an {st.session_state.game_name} player number. I'll use it to find player's latest {st.session_state.game_name} club game. It will be the subject of our chat.", key='intro_message_3', logo=st.session_state.assistant_logo)
     streamlit_chat.message(
-        f"To start our postmortem chat, I'll need a PBN file or URL. It will be the subject of our chat.", key='intro_message_3', logo=st.session_state.assistant_logo)
+        f"Om onze postmortem chat te starten, heb ik een PBN bestand of URL nodig. Dit wordt het onderwerp van onze chat.", key='intro_message_3', logo=st.session_state.assistant_logo)
     #streamlit_chat.message(
     #    f"Enter any {st.session_state.game_name} player number in the left sidebar.", key='intro_message_4', logo=st.session_state.assistant_logo)
     streamlit_chat.message(
-        "I'm just a Proof of Concept so don't double me.", key='intro_message_5', logo=st.session_state.assistant_logo)
+        "Ik ben slechts een Proof of Concept dus vertrouw me niet te veel.", key='intro_message_5', logo=st.session_state.assistant_logo)
     return
 
 
