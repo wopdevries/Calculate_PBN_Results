@@ -178,7 +178,7 @@ def ShowDataFrameTable(df, key, query='SELECT * FROM self', show_sql_query=True)
 
 
 def app_info():
-    st.caption(f"Project lead is Robert Salita research@AiPolice.org. Code written in Python. UI written in Streamlit. AI API is OpenAI. Data engine is Pandas. Query engine is Duckdb. Chat UI uses streamlit-chat. Self hosted using Cloudflare Tunnel. Repo:https://github.com/BSalita/Bridge_Game_Postmortem_Chatbot Club data scraped from public ACBL webpages. Tournament data from ACBL API.")
+    st.caption(f"Project lead is Robert Salita research@AiPolice.org. Code written in Python. UI written in Streamlit. AI API is OpenAI. Data engine is Pandas. Query engine is Duckdb. Chat UI uses streamlit-chat. Self hosted using Cloudflare Tunnel. Repo:https://github.com/BSalita/PBN_Postmortem_Chatbot. Game data scraped from PBN file.")
     # obsolete when chat was removed: Default AI model:{DEFAULT_AI_MODEL} OpenAI client:{openai.__version__} fastai:{fastai.__version__} safetensors:{safetensors.__version__} sklearn:{sklearn.__version__} torch:{torch.__version__} 
     st.caption(
         f"App:{st.session_state.app_datetime} Python:{'.'.join(map(str, sys.version_info[:3]))} Streamlit:{st.__version__} Pandas:{pd.__version__} duckdb:{duckdb.__version__} numpy:{np.__version__} polars:{pl.__version__} Query Params:{st.query_params.to_dict()}")
@@ -684,11 +684,11 @@ def initialize_website_specific():
     st.session_state.assistant_logo = 'https://github.com/BSalita/Bridge_Game_Postmortem_Chatbot/blob/master/assets/logo_assistant.gif?raw=true' # 🥸 todo: put into config. must have raw=true for github url.
     st.session_state.guru_logo = 'https://github.com/BSalita/Bridge_Game_Postmortem_Chatbot/blob/master/assets/logo_guru.png?raw=true' # 🥷todo: put into config file. must have raw=true for github url.
     st.session_state.game_results_url_default = None
-    st.session_state.game_name = 'acbl'
+    st.session_state.game_name = 'pbn'
     st.session_state.game_results_url = st.session_state.game_results_url_default
     # todo: put filenames into a .json or .toml file?
     st.session_state.rootPath = pathlib.Path('e:/bridge/data')
-    st.session_state.acblPath = st.session_state.rootPath.joinpath('acbl')
+    #st.session_state.acblPath = st.session_state.rootPath.joinpath('acbl')
     #st.session_state.favoritesPath = pathlib.joinpath('favorites'),
     st.session_state.savedModelsPath = st.session_state.rootPath.joinpath('SavedModels')
 
@@ -779,7 +779,7 @@ class PBNResultsCalculator(PostmortemBase):
             'show_sql_query': True, # os.getenv('STREAMLIT_ENV') == 'development',
             'use_historical_data': False,
             'do_not_cache_df': True, # todo: set to True for production
-            'con': duckdb.connect(),
+            'con': duckdb.connect(), # IMPORTANT: duckdb.connect() hung until previous version was installed.
             'con_register_name': 'self',
             'main_section_container': st.empty(),
             'app_datetime': datetime.fromtimestamp(pathlib.Path(__file__).stat().st_mtime, tz=timezone.utc).strftime('%Y-%m-%d %H:%M:%S %Z'),
