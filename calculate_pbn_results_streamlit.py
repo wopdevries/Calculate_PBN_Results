@@ -5,6 +5,9 @@ PBN Results Calculator Streamlit Application
 # streamlit program to display Bridge game deal statistics from a PBN file.
 # Invoke from system prompt using: streamlit run CalculatePBNResults_Streamlit.py
 
+# todo:
+# 1. looks like a bug has crept in when using DDS_Camrose24_1- BENCAM22 v WBridge5. Looks like X (double) is being parsed incorrectly.
+
 
 import streamlit as st
 import streamlit_chat
