@@ -2087,12 +2087,12 @@ class MatchPointAugmenter:
             # todo: assert self.df['EV_Pct_Max_NS'].between(0,1).all()
             # todo: assert self.df['EV_Pct_Max_EW'].between(0,1).all()
             lambda df: df.with_columns([
-                (pl.col('EV_Pct_Max_NS')-pl.col('Pct_NS')).alias('EV_Pct_Max_Diff_NS'), # todo: suspect this is wrong
-                (pl.col('EV_Pct_Max_EW')-pl.col('Pct_EW')).alias('EV_Pct_Max_Diff_EW'), # todo: suspect this is wrong
-                (pl.col('DD_Score_Pct_NS_Max')-pl.col('Par_Pct_NS')).alias('EV_Par_Pct_Diff_NS'), # todo: suspect this is wrong
-                (pl.col('DD_Score_Pct_EW_Max')-pl.col('Par_Pct_EW')).alias('EV_Par_Pct_Diff_EW'), # todo: suspect this is wrong
-                (pl.col('EV_Pct_Max_NS')-pl.col('Par_Pct_NS')).alias('EV_Par_Pct_Max_Diff_NS'), # todo: suspect this is wrong
-                (pl.col('EV_Pct_Max_EW')-pl.col('Par_Pct_EW')).alias('EV_Par_Pct_Max_Diff_EW'), # todo: suspect this is wrong
+                (pl.col('Pct_NS')-pl.col('EV_Pct_Max_NS')).alias('EV_Pct_Max_Diff_NS'),
+                (pl.col('Pct_EW')-pl.col('EV_Pct_Max_EW')).alias('EV_Pct_Max_Diff_EW'),
+                (pl.col('Pct_NS')-pl.col('DD_Score_Pct_NS_Max')).alias('EV_Par_Pct_Diff_NS'),
+                (pl.col('Pct_EW')-pl.col('DD_Score_Pct_EW_Max')).alias('EV_Par_Pct_Diff_EW'),
+                (pl.col('Pct_NS')-pl.col('EV_Pct_Max_NS')).alias('EV_Par_Pct_Max_Diff_NS'),
+                (pl.col('Pct_EW')-pl.col('EV_Pct_Max_EW')).alias('EV_Par_Pct_Max_Diff_EW'),
             ])
         ]
 
