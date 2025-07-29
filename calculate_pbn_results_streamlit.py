@@ -5,6 +5,9 @@ PBN Results Calculator Streamlit Application
 # streamlit program to display Bridge game deal statistics from a PBN file.
 # Invoke from system prompt using: streamlit run CalculatePBNResults_Streamlit.py
 
+# todo:
+# 1. looks like a bug has crept in when using DDS_Camrose24_1- BENCAM22 v WBridge5. Looks like X (double) is being parsed incorrectly.
+
 
 import streamlit as st
 import streamlit_chat
@@ -285,6 +288,8 @@ def change_game_state_PBN(file_data,url,path_url,boards,df,everything_df):
 
 
 def change_game_state():
+
+    st.markdown('<div style="height: 50px;"><a name="top-of-report"></a></div>', unsafe_allow_html=True)
 
     with st.spinner(f'Preparing Bridge Game Postmortem Report. Takes 2 minutes total...'):
         #with st.session_state.chat_container:
@@ -866,6 +871,7 @@ class PBNResultsCalculator(PostmortemBase):
             report_event_info = f"{st.session_state.game_description} (event id {st.session_state.session_id})."
             report_game_results_webpage = f"Results Page: {st.session_state.game_results_url}"
             report_your_match_info = f"Your pair was {st.session_state.pair_id}{st.session_state.pair_direction} in section {st.session_state.section_name}. You played {st.session_state.player_direction}. Your partner was {st.session_state.partner_name} ({st.session_state.partner_id}) who played {st.session_state.partner_direction}."
+            #st.markdown('<div style="height: 50px;"><a name="top-of-report"></a></div>', unsafe_allow_html=True)
             st.markdown(f"### {report_title}")
             st.markdown(f"##### {report_creator}")
             st.markdown(f"#### {report_event_info}")
@@ -898,14 +904,20 @@ class PBNResultsCalculator(PostmortemBase):
                             pdf_assets.append(query_df)
                         sql_query_count += 1
 
-            # As a text link
-            #st.markdown('[Back to Top](#your-personalized-report)')
-
             # As an html button (needs styling added)
             # can't use link_button() restarts page rendering. markdown() will correctly jump to href.
             # st.link_button('Go to top of report',url='#your-personalized-report')\
             report_title_anchor = report_title.replace(' ','-').lower()
-            st.markdown(f'<a target="_self" href="#{report_title_anchor}"><button>Go to top of report</button></a>', unsafe_allow_html=True)
+            # Go to top button using simple anchor link (centered)
+            st.markdown('''
+                <div style="text-align: center; margin: 20px 0;">
+                    <a href="#top-of-report" style="text-decoration: none;">
+                        <button style="padding: 8px 16px; background-color: #ff4b4b; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px;">
+                            Go to top of report
+                        </button>
+                    </a>
+                </div>
+            ''', unsafe_allow_html=True)
 
         if st.session_state.pdf_link.download_button(label="Download Personalized Report",
                 data=streamlitlib.create_pdf(st.session_state.pdf_assets, title=f"Bridge Game Postmortem Report Personalized for {st.session_state.player_id}"),
