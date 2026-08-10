@@ -48,7 +48,7 @@ sys.path.append(str(pathlib.Path.cwd().joinpath('mlBridgeLib')))  # global # Req
 
 import streamlitlib
 from mlBridge.mlBridgePostmortemLib import PostmortemBase
-import mlBridgeEndplayLib
+from mlBridge import mlBridgeEndplayLib
 from mlBridge.mlBridgeAugmentLib import (
     AllAugmentations,
 )#import mlBridgeBiddingLib
